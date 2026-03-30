@@ -15,7 +15,7 @@ Implemented scaffold pieces:
 - BBP init scaffold with OpenBSD-derived defaults plus EEPROM BBP overrides
 - RF/channel scaffold for RT2528 2.4GHz channel programming with bounded calibration wiring
 - bounded post-channel sanity check and one bounded recovery attempt
-- bounded TX plumbing path with conservative descriptor setup and completion/status handoff
+- bounded TX descriptor-construction scaffolding with runtime TX submission intentionally blocked
 
 Still intentionally incomplete:
 
@@ -36,8 +36,7 @@ All uncertain behavior remains tagged as `TODO(openbsd-rum-port)`.
 ## Safety defaults
 
 - Default safety gate is `bind=0` (no attach by default).
-- Hardware verification is intentionally deferred at this stage.
-- Smoke-test workflows are not part of the recommended workflow yet.
+- Functional hardware verification is intentionally deferred at this stage.
 
 ## Layout
 

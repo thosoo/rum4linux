@@ -144,7 +144,7 @@ static void dwr_mac_tx(struct ieee80211_hw *hw,
 	bool ownership_transferred;
 	int ret;
 
-	ret = dwr_tx_submit_frame(dwr, skb, false, &ownership_transferred);
+	ret = dwr_tx_submit_frame(dwr, skb, &ownership_transferred);
 	if (ret && __ratelimit(&net_ratelimit_state))
 		dwr_warn(&dwr->usb.intf->dev, "tx blocked len=%u err=%d\n", skb->len, ret);
 	if (!ownership_transferred)

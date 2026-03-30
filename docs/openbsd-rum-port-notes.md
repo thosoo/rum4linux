@@ -31,7 +31,7 @@ This is a structural generalization pass, not a claim of broad functional enable
 - BBP busy/read/write helpers and bounded init defaults
 - RF/channel scaffold for RT2528 2.4GHz path with bounded calibration mapping
 - bounded post-channel sanity and one bounded recovery attempt
-- bounded TX URB path with conservative descriptor setup and completion-status reporting
+- bounded TX descriptor scaffolding with runtime submission intentionally blocked
 
 ## Explicitly incomplete / deferred
 
@@ -53,4 +53,3 @@ Uncertain parts should stay tagged as `TODO(openbsd-rum-port)` until confirmed f
 
 - Keep safety-first defaults (`bind=0`).
 - Do not treat this tree as ready for functional verification.
-- Do not treat smoke-test hooks as recommended workflow.
