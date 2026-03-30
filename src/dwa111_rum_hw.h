@@ -18,7 +18,7 @@
 #define DWR_USB_TIMEOUT_MS         1000
 #define DWR_USB_IO_RETRIES         3
 
-/* TODO(openbsd-rum-port): confirm full RT2571W/RT2573 register map in use. */
+/* TODO(openbsd-rum-port): confirm complete register map. */
 #define DWR_MCU_CODE_BASE      0x0800
 #define DWR_MAC_CSR0           0x3000
 #define DWR_MAC_CSR1           0x3004
@@ -29,6 +29,9 @@
 #define DWR_TXRX_CSR1          0x3044
 #define DWR_TXRX_CSR2          0x3048
 #define DWR_TXRX_CSR3          0x304c
+#define DWR_PHY_CSR0           0x3080
+#define DWR_PHY_CSR3           0x308c
+#define DWR_PHY_CSR4           0x3090
 #define DWR_INT_SOURCE_CSR     0x3080 /* TODO(openbsd-rum-port): verify interrupt source register. */
 #define DWR_INT_MASK_CSR       0x3084 /* TODO(openbsd-rum-port): verify interrupt mask register. */
 
@@ -38,6 +41,20 @@
 #define DWR_MCU_RUN            BIT(3)
 #define DWR_BBPRF_AWAKE        BIT(3)
 #define DWR_FORCE_WAKEUP       BIT(2)
+#define DWR_BBP_READ           BIT(15)
+#define DWR_BBP_BUSY           BIT(16)
+#define DWR_RF_20BIT           (20U << 24)
+#define DWR_RF_BUSY            BIT(31)
+
+#define DWR_RF_5226            1
+#define DWR_RF_2528            2
+#define DWR_RF_5225            3
+#define DWR_RF_2527            4
+
+#define DWR_RF1                0
+#define DWR_RF2                2
+#define DWR_RF3                1
+#define DWR_RF4                3
 
 #define DWR_EEPROM_RAW_CACHE_LEN     256
 #define DWR_EEPROM_TXPOWER_CHANS_2G  14
@@ -74,8 +91,11 @@ struct dwr_hw_state {
 	bool eeprom_valid;
 	bool fw_required;
 	bool fw_uploaded;
+	bool bbp_init_ok;
+	bool rf_init_ok;
 	bool post_fw_sanity_ok;
 	bool hw_init_ok;
+	u8 current_channel;
 	u32 mac_csr0_before_fw;
 	u32 mac_csr0_after_fw;
 	u32 txrx_csr0_before_fw;

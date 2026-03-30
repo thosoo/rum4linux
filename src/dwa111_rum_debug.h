@@ -4,9 +4,9 @@
 
 #include <linux/device.h>
 
-#define dwr_info(dev, fmt, ...) dev_info((dev), "dwa111_rum: " fmt, ##__VA_ARGS__)
-#define dwr_warn(dev, fmt, ...) dev_warn((dev), "dwa111_rum: " fmt, ##__VA_ARGS__)
-#define dwr_err(dev, fmt, ...)  dev_err((dev),  "dwa111_rum: " fmt, ##__VA_ARGS__)
-#define dwr_dbg(dev, fmt, ...)  dev_dbg((dev),  "dwa111_rum: " fmt, ##__VA_ARGS__)
+#define dwr_info(dev, fmt, ...) dev_info((dev), "rum4linux: " fmt, ##__VA_ARGS__)
+#define dwr_warn(dev, fmt, ...) dev_warn((dev), "rum4linux: " fmt, ##__VA_ARGS__)
+#define dwr_err(dev, fmt, ...)  dev_err((dev),  "rum4linux: " fmt, ##__VA_ARGS__)
+#define dwr_dbg(dev, fmt, ...)  dev_dbg((dev),  "rum4linux: " fmt, ##__VA_ARGS__)
 
 #endif

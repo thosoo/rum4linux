@@ -288,7 +288,7 @@ static const struct usb_device_id dwr_usb_ids[] = {
 MODULE_DEVICE_TABLE(usb, dwr_usb_ids);
 
 static struct usb_driver dwr_usb_driver = {
-	.name = "dwa111_rum",
+	.name = "rum4linux",
 	.id_table = dwr_usb_ids,
 	.probe = dwr_usb_probe,
 	.disconnect = dwr_usb_disconnect,

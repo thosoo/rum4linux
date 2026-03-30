@@ -5,6 +5,8 @@
 #include "dwa111_rum_debug.h"
 #include "dwa111_rum_eeprom.h"
 #include "dwa111_rum_fw.h"
+#include "rum4linux_bbp.h"
+#include "rum4linux_rf.h"
 
 static int dwr_ctrl_in_once(struct dwr_dev *dwr, u8 req, u16 value, u16 index,
 			    void *buf, u16 len)
@@ -179,21 +181,24 @@ static int dwr_wait_bbprf_awake(struct dwr_dev *dwr)
 static void dwr_log_init_summary(struct dwr_dev *dwr)
 {
 	dwr_info(&dwr->usb.intf->dev,
-		 "init summary: eeprom_valid=%d mac=%pM rf_rev=%u fw_required=%d fw_uploaded=%d sanity=%d mac_csr0_pre=0x%08x mac_csr0_post=0x%08x\n",
+		 "init summary: module=rum4linux eeprom_valid=%d mac=%pM rf_rev=%u fw_uploaded=%d bbp_init=%d rf_init=%d chan=%u sanity=%d\n",
 		 dwr->hw_state.eeprom_valid, dwr->mac_addr, dwr->eeprom.rf_rev,
-		 dwr->hw_state.fw_required, dwr->hw_state.fw_uploaded,
-		 dwr->hw_state.post_fw_sanity_ok,
-		 dwr->hw_state.mac_csr0_before_fw,
-		 dwr->hw_state.mac_csr0_after_fw);
+		 dwr->hw_state.fw_uploaded, dwr->hw_state.bbp_init_ok,
+		 dwr->hw_state.rf_init_ok, dwr->hw_state.current_channel,
+		 dwr->hw_state.post_fw_sanity_ok);
 }
 
 int dwr_hw_init(struct dwr_dev *dwr)
 {
 	u32 mac_csr0;
 	int ret;
+	u8 default_chan = 1;
 
 	memset(&dwr->hw_state, 0, sizeof(dwr->hw_state));
 	dwr->hw_state.fw_required = true;
+
+	if (dwr->hw->conf.chandef.chan && dwr->hw->conf.chandef.chan->hw_value)
+		default_chan = dwr->hw->conf.chandef.chan->hw_value;
 
 	ret = dwr_verify_mac_regs(dwr);
 	if (ret)
@@ -228,9 +233,24 @@ int dwr_hw_init(struct dwr_dev *dwr)
 	if (ret)
 		return ret;
 
+	ret = dwr_bbp_init(dwr);
+	if (ret) {
+		dwr_err(&dwr->usb.intf->dev, "bbp init failed: %d\n", ret);
+		dwr_log_init_summary(dwr);
+		return ret;
+	}
+
+	ret = dwr_rf_set_channel_2ghz(dwr, default_chan);
+	if (ret) {
+		dwr_err(&dwr->usb.intf->dev,
+			"rf/channel init failed for channel %u: %d\n", default_chan, ret);
+		dwr_log_init_summary(dwr);
+		return ret;
+	}
+
 	ret = dwr_read_reg(dwr, DWR_MAC_CSR0, &mac_csr0);
 	if (ret) {
-		dwr_err(&dwr->usb.intf->dev, "MAC_CSR0 post-fw read failed: %d\n", ret);
+		dwr_err(&dwr->usb.intf->dev, "MAC_CSR0 post-init read failed: %d\n", ret);
 		return ret;
 	}
 	dwr->hw_state.mac_csr0_after_fw = mac_csr0;
@@ -250,9 +270,15 @@ int dwr_set_channel(struct dwr_dev *dwr, struct ieee80211_channel *chan)
 {
 	if (!chan)
 		return -EINVAL;
+	if (chan->band != NL80211_BAND_2GHZ)
+		return -EOPNOTSUPP;
 
-	dwr_info(&dwr->usb.intf->dev,
-		 "stub set_channel: center_freq=%d hw_value=%d\n",
-		 chan->center_freq, chan->hw_value);
-	return 0;
+	if (!dwr->hw_state.hw_init_ok) {
+		dwr_info(&dwr->usb.intf->dev,
+			 "set_channel deferred until init completes (chan=%d)\n",
+			 chan->hw_value);
+		return 0;
+	}
+
+	return dwr_rf_set_channel_2ghz(dwr, chan->hw_value);
 }
