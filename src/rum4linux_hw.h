@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef _DWA111_RUM_HW_H
-#define _DWA111_RUM_HW_H
+#ifndef _RUM4LINUX_HW_H
+#define _RUM4LINUX_HW_H
 
 #include <linux/usb.h>
 #include <linux/mutex.h>

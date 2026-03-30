@@ -2,12 +2,12 @@
 #include <linux/firmware.h>
 #include <linux/delay.h>
 #include <asm/unaligned.h>
-#include "dwa111_rum_fw.h"
-#include "dwa111_rum_debug.h"
+#include "rum4linux_fw.h"
+#include "rum4linux_debug.h"
 
 static const char * const dwr_fw_candidates[] = {
 	"rum-rt2573",
-	"rt73.bin", /* TODO(openbsd-rum-port): verify if this fallback is useful for DWA-111. */
+	"rt73.bin", /* TODO(openbsd-rum-port): verify whether this fallback applies across rum(4)-family devices. */
 };
 
 static int dwr_fw_upload_chunks(struct dwr_dev *dwr, const u8 *data, size_t len)

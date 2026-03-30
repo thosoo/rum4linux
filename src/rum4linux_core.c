@@ -5,16 +5,13 @@
 #include <linux/etherdevice.h>
 #include <linux/ratelimit.h>
 #include <net/mac80211.h>
-#include "dwa111_rum_hw.h"
-#include "dwa111_rum_debug.h"
+#include "rum4linux_hw.h"
+#include "rum4linux_debug.h"
 #include "rum4linux_tx.h"
 
 static bool bind;
-static bool tx_smoke_test;
 module_param(bind, bool, 0644);
-module_param(tx_smoke_test, bool, 0644);
-MODULE_PARM_DESC(bind, "Actually bind to 07d1:3c06. Default: false");
-MODULE_PARM_DESC(tx_smoke_test, "Run one bounded TX smoke-test after init. Default: false");
+MODULE_PARM_DESC(bind, "Actually bind to currently enumerated rum(4)-family IDs (default: false)");
 
 static struct ieee80211_rate dwr_rates_2ghz[] = {
 	{ .bitrate = 10,  .hw_value = 0 },
@@ -125,11 +122,6 @@ static int dwr_mac_start(struct ieee80211_hw *hw)
 		return ret;
 
 	dwr->usb.running = true;
-	if (tx_smoke_test) {
-		ret = dwr_tx_smoke_test(dwr);
-		if (ret)
-			dwr_warn(&dwr->usb.intf->dev, "tx smoke-test result: %d\n", ret);
-	}
 	return 0;
 }
 
@@ -138,6 +130,7 @@ static void dwr_mac_stop(struct ieee80211_hw *hw, bool suspend)
 	struct dwr_dev *dwr = hw_to_dwr(hw);
 
 	dwr_info(&dwr->usb.intf->dev, "mac80211 stop suspend=%d\n", suspend);
+	dwr_tx_cancel_pending(dwr);
 	dwr_hw_stop(dwr);
 	cancel_work_sync(&dwr->rx_work);
 	cancel_work_sync(&dwr->reset_work);
@@ -148,12 +141,14 @@ static void dwr_mac_tx(struct ieee80211_hw *hw,
 		       struct sk_buff *skb)
 {
 	struct dwr_dev *dwr = hw_to_dwr(hw);
+	bool ownership_transferred;
 	int ret;
 
-	ret = dwr_tx_submit_frame(dwr, skb, false);
+	ret = dwr_tx_submit_frame(dwr, skb, false, &ownership_transferred);
 	if (ret && __ratelimit(&net_ratelimit_state))
 		dwr_warn(&dwr->usb.intf->dev, "tx blocked len=%u err=%d\n", skb->len, ret);
-	ieee80211_free_txskb(hw, skb);
+	if (!ownership_transferred)
+		ieee80211_free_txskb(hw, skb);
 }
 
 static int dwr_mac_config(struct ieee80211_hw *hw, u32 changed)
@@ -283,6 +278,7 @@ static void dwr_usb_disconnect(struct usb_interface *intf)
 		return;
 
 	usb_set_intfdata(intf, NULL);
+	dwr_tx_cancel_pending(dwr);
 	cancel_work_sync(&dwr->rx_work);
 	cancel_work_sync(&dwr->reset_work);
 	if (dwr->registered_hw)
@@ -307,5 +303,5 @@ static struct usb_driver dwr_usb_driver = {
 module_usb_driver(dwr_usb_driver);
 
 MODULE_AUTHOR("OpenAI scaffold");
-MODULE_DESCRIPTION("rum4linux: DWA-111 RT2571W replacement scaffold inspired by OpenBSD rum(4)");
+MODULE_DESCRIPTION("rum4linux: OpenBSD rum(4)-family Linux scaffold (early, conservative)");
 MODULE_LICENSE("GPL");

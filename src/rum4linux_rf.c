@@ -2,7 +2,7 @@
 #include <linux/delay.h>
 #include "rum4linux_rf.h"
 #include "rum4linux_bbp.h"
-#include "dwa111_rum_debug.h"
+#include "rum4linux_debug.h"
 
 struct dwr_rf_chan_plan {
 	u8 chan;

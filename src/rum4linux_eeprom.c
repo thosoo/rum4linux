@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include <linux/etherdevice.h>
 #include <asm/unaligned.h>
-#include "dwa111_rum_eeprom.h"
-#include "dwa111_rum_debug.h"
+#include "rum4linux_eeprom.h"
+#include "rum4linux_debug.h"
 
 /* OpenBSD if_rumreg.h EEPROM offsets. */
 #define DWR_EEPROM_MACBBP            0x0000

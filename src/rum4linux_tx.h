@@ -3,7 +3,7 @@
 #define _RUM4LINUX_TX_H
 
 #include <linux/skbuff.h>
-#include "dwa111_rum_hw.h"
+#include "rum4linux_hw.h"
 
 int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 			bool smoke_test, bool *ownership_transferred);

@@ -3,7 +3,7 @@
 #include <linux/slab.h>
 #include <linux/ieee80211.h>
 #include "rum4linux_tx.h"
-#include "dwa111_rum_debug.h"
+#include "rum4linux_debug.h"
 
 struct dwr_tx_desc_min {
 	__le32 flags;

@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
-#include "dwa111_rum_hw.h"
-#include "dwa111_rum_debug.h"
-#include "dwa111_rum_eeprom.h"
-#include "dwa111_rum_fw.h"
+#include "rum4linux_hw.h"
+#include "rum4linux_debug.h"
+#include "rum4linux_eeprom.h"
+#include "rum4linux_fw.h"
 #include "rum4linux_bbp.h"
 #include "rum4linux_rf.h"
 

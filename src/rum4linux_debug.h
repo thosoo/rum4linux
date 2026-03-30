@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef _DWA111_RUM_DEBUG_H
-#define _DWA111_RUM_DEBUG_H
+#ifndef _RUM4LINUX_DEBUG_H
+#define _RUM4LINUX_DEBUG_H
 
 #include <linux/device.h>
 

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include <linux/delay.h>
 #include "rum4linux_bbp.h"
-#include "dwa111_rum_debug.h"
+#include "rum4linux_debug.h"
 
 struct dwr_bbp_init_ent {
 	u8 reg;

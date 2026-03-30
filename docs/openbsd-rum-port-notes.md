@@ -1,12 +1,18 @@
 # OpenBSD rum(4) port notes for rum4linux
 
-## Primary reference files/concepts
+## Intent
+
+`rum4linux` is an early Linux scaffold inspired by OpenBSD `rum(4)`, being generalized toward the `rum(4)` family structure rather than a single USB product narrative.
+
+This is a structural generalization pass, not a claim of broad functional enablement.
+
+## Primary references
 
 - OpenBSD `sys/dev/usb/if_rum.c`
-  - `rum_read_eeprom`
-  - `rum_load_microcode`
-  - `rum_bbp_read` / `rum_bbp_write` / `rum_bbp_init`
-  - `rum_rf_write` and channel-programming structure in `rum_set_chan`
+  - EEPROM read flow
+  - microcode load flow
+  - BBP read/write/init flow
+  - RF write and channel programming sequencing
 - OpenBSD `sys/dev/usb/if_rumreg.h`
   - vendor request IDs
   - register offsets and BBP/RF bit definitions
@@ -14,41 +20,37 @@
   - `RT2573_DEF_BBP`
 - Linux `rt73usb` lineage (`drivers/net/wireless/ralink/rt2x00/rt73usb.c/.h`)
   - `rf_vals_bg_2528[]`
-  - `TXPOWER_TO_DEV` clamping range (0..31), default 24
+  - txpower clamping conventions
 
-## Ported confidently in this phase
+## Implemented scaffold status (conservative)
 
-- module build/output named `rum4linux.ko`; DKMS module location audited to module root
-- vendor request IDs and core register offsets used by init path
-- EEPROM extraction and parsed identity fields
-- firmware chunk upload + MCU handoff/wait scaffolding
-- BBP helpers and init flow:
-  - BBP busy/read/write transaction pattern via `PHY_CSR3`
-  - OpenBSD `RT2573_DEF_BBP` default table application
-  - EEPROM BBP PROM override handling and structured logging
-- RF/channel and calibration implementation:
-  - strict `rf_rev == RT2528` gate
-  - strict 2.4GHz channels 1-14 gate
-  - confirmed RT2528 channel table from Linux `rt73usb` `rf_vals_bg_2528[]`
-  - OpenBSD-style 3-phase RF3 bit2 toggle sequence
-  - calibration wiring:
-    - `rffreq` into RF4 (`<< 10` in RF value domain per OpenBSD rum flow)
-    - EEPROM txpower byte mapped/clamped into RF3 txpower bits (`<< 7` in RF value domain)
-- post-channel checks:
-  - MAC/PHY/BBP sanity reads
-  - one bounded recovery attempt (BBP re-init + channel re-apply)
+- module/DKMS identity: `rum4linux`
+- vendor request and core register access path for init scaffolding
+- EEPROM parse path with structured state capture
+- firmware upload scaffold and MCU handoff/wait sequence
+- BBP busy/read/write helpers and bounded init defaults
+- RF/channel scaffold for RT2528 2.4GHz path with bounded calibration mapping
+- bounded post-channel sanity and one bounded recovery attempt
+- bounded TX URB path with conservative descriptor setup and completion-status reporting
 
-## Still uncertain / intentionally not claimed complete
+## Explicitly incomplete / deferred
 
-- complete RT2571W TX descriptor semantics required for safe actual TX submission
-- whether additional per-channel RF/BBP calibration writes are required before stable traffic
-- RX descriptor and receive datapath
-- association / operational station mode
+- complete TX descriptor coverage for all `rum(4)`-family variants
+- RX descriptor parsing and RX datapath
+- association / operational station behavior
+- broad USB ID enumeration and per-device bring-up policies
+- broad firmware naming certainty across the whole family
 
-All uncertain parts are tagged in code as `TODO(openbsd-rum-port)` and return truthful errors when unconfirmed steps are reached.
+Uncertain parts should stay tagged as `TODO(openbsd-rum-port)` until confirmed from primary sources.
 
-## Next phase recommendation
+## Device-ID and coverage policy
 
-1. Confirm full RT2571W TX descriptor field semantics from trustworthy references.
-2. Enable one confirmed management/null frame TX path and validate URB completion behavior.
-3. Start bounded RX descriptor parsing only after TX descriptor correctness is established.
+- Naming/docs are generalized to `rum(4)` family scope.
+- Actual runtime binding remains intentionally conservative.
+- If only a narrow USB ID set is enabled in code, that is intentional until broader per-device validation is complete.
+
+## Workflow policy at this stage
+
+- Keep safety-first defaults (`bind=0`).
+- Do not treat this tree as ready for functional verification.
+- Do not treat smoke-test hooks as recommended workflow.
