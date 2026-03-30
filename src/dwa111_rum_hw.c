@@ -178,22 +178,77 @@ static int dwr_wait_bbprf_awake(struct dwr_dev *dwr)
 	return -ETIMEDOUT;
 }
 
+static int dwr_post_channel_sanity(struct dwr_dev *dwr)
+{
+	u32 mac_csr0;
+	u32 phy_csr4;
+	u8 bbp0;
+	u8 bbp3;
+	int ret;
+
+	dwr->hw_state.post_chan_sanity_attempted = true;
+
+	ret = dwr_read_reg(dwr, DWR_MAC_CSR0, &mac_csr0);
+	if (ret)
+		return ret;
+	ret = dwr_read_reg(dwr, DWR_PHY_CSR4, &phy_csr4);
+	if (ret)
+		return ret;
+	ret = dwr_bbp_read(dwr, 0, &bbp0);
+	if (ret)
+		return ret;
+	ret = dwr_bbp_read(dwr, 3, &bbp3);
+	if (ret)
+		return ret;
+
+	dwr_info(&dwr->usb.intf->dev,
+		 "post-chan sanity: mac_csr0=0x%08x phy_csr4=0x%08x bbp0=0x%02x bbp3=0x%02x\n",
+		 mac_csr0, phy_csr4, bbp0, bbp3);
+
+	if (!mac_csr0 || mac_csr0 == 0xffffffff || bbp0 == 0x00 || bbp0 == 0xff ||
+	    bbp3 == 0x00 || bbp3 == 0xff)
+		return -EIO;
+
+	dwr->hw_state.mac_csr0_after_fw = mac_csr0;
+	return 0;
+}
+
+static int dwr_recover_after_sanity_failure(struct dwr_dev *dwr, u8 chan)
+{
+	int ret;
+
+	dwr->hw_state.recovery_attempted = true;
+	dwr_warn(&dwr->usb.intf->dev,
+		 "post-chan sanity failed, attempting bounded recovery\n");
+
+	ret = dwr_bbp_init(dwr);
+	if (ret)
+		return ret;
+	ret = dwr_rf_set_channel_2ghz(dwr, chan);
+	if (ret)
+		return ret;
+	ret = dwr_post_channel_sanity(dwr);
+	if (!ret)
+		dwr->hw_state.recovery_succeeded = true;
+	return ret;
+}
+
 static void dwr_log_init_summary(struct dwr_dev *dwr)
 {
 	dwr_info(&dwr->usb.intf->dev,
-		 "init summary: module=rum4linux eeprom_valid=%d mac=%pM rf_rev=%u fw_uploaded=%d bbp_init=%d rf_init=%d chan=%u sanity=%d\n",
-		 dwr->hw_state.eeprom_valid, dwr->mac_addr, dwr->eeprom.rf_rev,
-		 dwr->hw_state.fw_uploaded, dwr->hw_state.bbp_init_ok,
-		 dwr->hw_state.rf_init_ok, dwr->hw_state.current_channel,
-		 dwr->hw_state.post_fw_sanity_ok);
+		 "init summary: module=rum4linux eeprom=%d fw=%d bbp=%d rf=%d calib=%d chan=%u sanity=%d sanity_try=%d recover_try=%d recover_ok=%d mac=%pM rf_rev=%u\n",
+		 dwr->hw_state.eeprom_valid, dwr->hw_state.fw_uploaded,
+		 dwr->hw_state.bbp_init_ok, dwr->hw_state.rf_init_ok,
+		 dwr->hw_state.calibration_applied, dwr->hw_state.current_channel,
+		 dwr->hw_state.post_fw_sanity_ok, dwr->hw_state.post_chan_sanity_attempted,
+		 dwr->hw_state.recovery_attempted, dwr->hw_state.recovery_succeeded,
+		 dwr->mac_addr, dwr->eeprom.rf_rev);
 }
 
 int dwr_hw_init(struct dwr_dev *dwr)
 {
-	u32 mac_csr0;
 	int ret;
 	u8 default_chan = 1;
-	u8 bbp_r0;
 
 	memset(&dwr->hw_state, 0, sizeof(dwr->hw_state));
 	dwr->hw_state.fw_required = true;
@@ -249,19 +304,17 @@ int dwr_hw_init(struct dwr_dev *dwr)
 		return ret;
 	}
 
-	ret = dwr_bbp_read(dwr, 0, &bbp_r0);
+	ret = dwr_post_channel_sanity(dwr);
 	if (ret) {
-		dwr_err(&dwr->usb.intf->dev, "post-rf BBP read (R0) failed: %d\n", ret);
-		return ret;
+		ret = dwr_recover_after_sanity_failure(dwr, default_chan);
+		if (ret) {
+			dwr_err(&dwr->usb.intf->dev,
+				"post-channel sanity/recovery failed for channel %u: %d\n",
+				default_chan, ret);
+			dwr_log_init_summary(dwr);
+			return ret;
+		}
 	}
-	dwr_info(&dwr->usb.intf->dev, "post-rf BBP sanity: R0=0x%02x\n", bbp_r0);
-
-	ret = dwr_read_reg(dwr, DWR_MAC_CSR0, &mac_csr0);
-	if (ret) {
-		dwr_err(&dwr->usb.intf->dev, "MAC_CSR0 post-init read failed: %d\n", ret);
-		return ret;
-	}
-	dwr->hw_state.mac_csr0_after_fw = mac_csr0;
 	dwr->hw_state.post_fw_sanity_ok = true;
 	dwr->hw_state.hw_init_ok = true;
 

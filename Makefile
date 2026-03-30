@@ -6,4 +6,5 @@ rum4linux-y := \
 	src/dwa111_rum_eeprom.o \
 	src/dwa111_rum_fw.o \
 	src/rum4linux_bbp.o \
-	src/rum4linux_rf.o
+	src/rum4linux_rf.o \
+	src/rum4linux_tx.o

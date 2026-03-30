@@ -94,6 +94,10 @@ struct dwr_hw_state {
 	bool bbp_init_ok;
 	bool rf_init_ok;
 	bool post_fw_sanity_ok;
+	bool calibration_applied;
+	bool post_chan_sanity_attempted;
+	bool recovery_attempted;
+	bool recovery_succeeded;
 	bool hw_init_ok;
 	u8 current_channel;
 	u32 mac_csr0_before_fw;

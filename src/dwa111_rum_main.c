@@ -7,10 +7,14 @@
 #include <net/mac80211.h>
 #include "dwa111_rum_hw.h"
 #include "dwa111_rum_debug.h"
+#include "rum4linux_tx.h"
 
 static bool bind;
+static bool tx_smoke_test;
 module_param(bind, bool, 0644);
+module_param(tx_smoke_test, bool, 0644);
 MODULE_PARM_DESC(bind, "Actually bind to 07d1:3c06. Default: false");
+MODULE_PARM_DESC(tx_smoke_test, "Run one bounded TX smoke-test after init. Default: false");
 
 static struct ieee80211_rate dwr_rates_2ghz[] = {
 	{ .bitrate = 10,  .hw_value = 0 },
@@ -121,6 +125,11 @@ static int dwr_mac_start(struct ieee80211_hw *hw)
 		return ret;
 
 	dwr->usb.running = true;
+	if (tx_smoke_test) {
+		ret = dwr_tx_smoke_test(dwr);
+		if (ret)
+			dwr_warn(&dwr->usb.intf->dev, "tx smoke-test result: %d\n", ret);
+	}
 	return 0;
 }
 
@@ -139,10 +148,11 @@ static void dwr_mac_tx(struct ieee80211_hw *hw,
 		       struct sk_buff *skb)
 {
 	struct dwr_dev *dwr = hw_to_dwr(hw);
+	int ret;
 
-	/* TODO(openbsd-rum-port): map skb to RT2571W TX descriptor + bulk-out URB. */
-	if (__ratelimit(&net_ratelimit_state))
-		dwr_warn(&dwr->usb.intf->dev, "tx drop len=%u (descriptor path not implemented)\n", skb->len);
+	ret = dwr_tx_submit_frame(dwr, skb, false);
+	if (ret && __ratelimit(&net_ratelimit_state))
+		dwr_warn(&dwr->usb.intf->dev, "tx blocked len=%u err=%d\n", skb->len, ret);
 	ieee80211_free_txskb(hw, skb);
 }
 
