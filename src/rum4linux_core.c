@@ -1,14 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include <linux/module.h>
 #include <linux/usb.h>
+#include <linux/usb/ch9.h>
 #include <linux/etherdevice.h>
+#include <linux/ratelimit.h>
 #include <net/mac80211.h>
-#include "dwa111_rum_hw.h"
-#include "dwa111_rum_debug.h"
+#include "rum4linux_hw.h"
+#include "rum4linux_debug.h"
+#include "rum4linux_tx.h"
 
 static bool bind;
 module_param(bind, bool, 0644);
-MODULE_PARM_DESC(bind, "Actually bind to 07d1:3c06. Default: false");
+MODULE_PARM_DESC(bind, "Actually bind to currently enumerated rum(4)-family IDs (default: false)");
 
 static struct ieee80211_rate dwr_rates_2ghz[] = {
 	{ .bitrate = 10,  .hw_value = 0 },
@@ -43,14 +46,69 @@ static struct ieee80211_supported_band dwr_band_2ghz = {
 	.n_bitrates = ARRAY_SIZE(dwr_rates_2ghz),
 };
 
+static int dwr_detect_endpoints(struct dwr_dev *dwr)
+{
+	struct usb_host_interface *alts = dwr->usb.intf->cur_altsetting;
+	int i;
+
+	dwr->usb.bulk_in_ep = 0;
+	dwr->usb.bulk_out_ep = 0;
+	dwr->usb.intr_ep = 0;
+	dwr->usb.bulk_in_maxp = 0;
+	dwr->usb.bulk_out_maxp = 0;
+	dwr->usb.intr_maxp = 0;
+
+	dwr_info(&dwr->usb.intf->dev,
+		 "probe: iface=%u alt=%u class=0x%02x eps=%u\n",
+		 alts->desc.bInterfaceNumber,
+		 alts->desc.bAlternateSetting,
+		 alts->desc.bInterfaceClass,
+		 alts->desc.bNumEndpoints);
+
+	for (i = 0; i < alts->desc.bNumEndpoints; i++) {
+		struct usb_endpoint_descriptor *ep = &alts->endpoint[i].desc;
+		u8 addr = ep->bEndpointAddress;
+		u16 maxp = usb_endpoint_maxp(ep);
+
+		dwr_info(&dwr->usb.intf->dev,
+			 "endpoint[%d]: addr=0x%02x attr=0x%02x maxp=%u interval=%u\n",
+			 i, addr, ep->bmAttributes, maxp, ep->bInterval);
+
+		if (usb_endpoint_is_bulk_in(ep) && !dwr->usb.bulk_in_ep) {
+			dwr->usb.bulk_in_ep = addr;
+			dwr->usb.bulk_in_maxp = maxp;
+		} else if (usb_endpoint_is_bulk_out(ep) && !dwr->usb.bulk_out_ep) {
+			dwr->usb.bulk_out_ep = addr;
+			dwr->usb.bulk_out_maxp = maxp;
+		} else if (usb_endpoint_is_int_in(ep) && !dwr->usb.intr_ep) {
+			dwr->usb.intr_ep = addr;
+			dwr->usb.intr_maxp = maxp;
+		}
+	}
+
+	if (!dwr->usb.bulk_in_ep || !dwr->usb.bulk_out_ep) {
+		dwr_err(&dwr->usb.intf->dev,
+			"missing required bulk endpoints (bulk-in=0x%02x bulk-out=0x%02x)\n",
+			dwr->usb.bulk_in_ep, dwr->usb.bulk_out_ep);
+		return -ENODEV;
+	}
+
+	dwr_info(&dwr->usb.intf->dev,
+		 "selected endpoints: bulk-in=0x%02x(%u) bulk-out=0x%02x(%u) intr=0x%02x(%u)\n",
+		 dwr->usb.bulk_in_ep, dwr->usb.bulk_in_maxp,
+		 dwr->usb.bulk_out_ep, dwr->usb.bulk_out_maxp,
+		 dwr->usb.intr_ep, dwr->usb.intr_maxp);
+	return 0;
+}
+
 static void dwr_rx_work(struct work_struct *work)
 {
-	/* TODO: pull completed RX URBs, decode descriptors, call ieee80211_rx_irqsafe() */
+	/* TODO(openbsd-rum-port): parse RX descriptors and call ieee80211_rx_irqsafe(). */
 }
 
 static void dwr_reset_work(struct work_struct *work)
 {
-	/* TODO: device reset / reinit path */
+	/* TODO(openbsd-rum-port): device reset/reinit path after USB or MCU fault. */
 }
 
 static int dwr_mac_start(struct ieee80211_hw *hw)
@@ -59,10 +117,6 @@ static int dwr_mac_start(struct ieee80211_hw *hw)
 	int ret;
 
 	dwr_info(&dwr->usb.intf->dev, "mac80211 start\n");
-	ret = dwr_load_firmware(dwr);
-	if (ret && ret != -EOPNOTSUPP)
-		return ret;
-
 	ret = dwr_hw_init(dwr);
 	if (ret)
 		return ret;
@@ -76,6 +130,7 @@ static void dwr_mac_stop(struct ieee80211_hw *hw, bool suspend)
 	struct dwr_dev *dwr = hw_to_dwr(hw);
 
 	dwr_info(&dwr->usb.intf->dev, "mac80211 stop suspend=%d\n", suspend);
+	dwr_tx_cancel_pending(dwr);
 	dwr_hw_stop(dwr);
 	cancel_work_sync(&dwr->rx_work);
 	cancel_work_sync(&dwr->reset_work);
@@ -86,10 +141,14 @@ static void dwr_mac_tx(struct ieee80211_hw *hw,
 		       struct sk_buff *skb)
 {
 	struct dwr_dev *dwr = hw_to_dwr(hw);
+	bool ownership_transferred;
+	int ret;
 
-	/* TODO: map skb -> RT2571W TX descriptor -> USB bulk out */
-	dwr_dbg(&dwr->usb.intf->dev, "drop TX len=%u (stub)\n", skb->len);
-	ieee80211_free_txskb(hw, skb);
+	ret = dwr_tx_submit_frame(dwr, skb, &ownership_transferred);
+	if (ret && __ratelimit(&net_ratelimit_state))
+		dwr_warn(&dwr->usb.intf->dev, "tx blocked len=%u err=%d\n", skb->len, ret);
+	if (!ownership_transferred)
+		ieee80211_free_txskb(hw, skb);
 }
 
 static int dwr_mac_config(struct ieee80211_hw *hw, u32 changed)
@@ -153,8 +212,12 @@ static int dwr_usb_probe(struct usb_interface *intf,
 	struct dwr_dev *dwr;
 	int ret;
 
-	if (!bind)
+	if (!bind) {
+		dwr_info(&intf->dev,
+			 "bind=0 refusing attach for %04x:%04x (set bind=1 to enable)\n",
+			 id->idVendor, id->idProduct);
 		return -ENODEV;
+	}
 
 	hw = ieee80211_alloc_hw(sizeof(*dwr), &dwr_mac_ops);
 	if (!hw)
@@ -168,6 +231,10 @@ static int dwr_usb_probe(struct usb_interface *intf,
 	spin_lock_init(&dwr->tx_lock);
 	INIT_WORK(&dwr->rx_work, dwr_rx_work);
 	INIT_WORK(&dwr->reset_work, dwr_reset_work);
+
+	ret = dwr_detect_endpoints(dwr);
+	if (ret)
+		goto err_free_hw;
 
 	SET_IEEE80211_DEV(hw, &intf->dev);
 	hw->queues = 4;
@@ -187,15 +254,20 @@ static int dwr_usb_probe(struct usb_interface *intf,
 	ret = ieee80211_register_hw(hw);
 	if (ret) {
 		dwr_err(&intf->dev, "ieee80211_register_hw failed: %d\n", ret);
-		usb_set_intfdata(intf, NULL);
-		usb_put_dev(dwr->usb.udev);
-		ieee80211_free_hw(hw);
-		return ret;
+		goto err_clear_intf;
 	}
 	dwr->registered_hw = true;
-	dwr_info(&intf->dev, "registered skeleton driver for %04x:%04x\n",
+	dwr_info(&intf->dev,
+		 "registered rum4linux skeleton for %04x:%04x\n",
 		 id->idVendor, id->idProduct);
 	return 0;
+
+err_clear_intf:
+	usb_set_intfdata(intf, NULL);
+err_free_hw:
+	usb_put_dev(dwr->usb.udev);
+	ieee80211_free_hw(hw);
+	return ret;
 }
 
 static void dwr_usb_disconnect(struct usb_interface *intf)
@@ -206,6 +278,7 @@ static void dwr_usb_disconnect(struct usb_interface *intf)
 		return;
 
 	usb_set_intfdata(intf, NULL);
+	dwr_tx_cancel_pending(dwr);
 	cancel_work_sync(&dwr->rx_work);
 	cancel_work_sync(&dwr->reset_work);
 	if (dwr->registered_hw)
@@ -221,7 +294,7 @@ static const struct usb_device_id dwr_usb_ids[] = {
 MODULE_DEVICE_TABLE(usb, dwr_usb_ids);
 
 static struct usb_driver dwr_usb_driver = {
-	.name = "dwa111_rum",
+	.name = "rum4linux",
 	.id_table = dwr_usb_ids,
 	.probe = dwr_usb_probe,
 	.disconnect = dwr_usb_disconnect,
@@ -230,5 +303,5 @@ static struct usb_driver dwr_usb_driver = {
 module_usb_driver(dwr_usb_driver);
 
 MODULE_AUTHOR("OpenAI scaffold");
-MODULE_DESCRIPTION("DWA-111 RT2571W replacement driver scaffold inspired by OpenBSD rum(4)");
+MODULE_DESCRIPTION("rum4linux: OpenBSD rum(4)-family Linux scaffold (early, conservative)");
 MODULE_LICENSE("GPL");

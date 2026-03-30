@@ -1,55 +1,53 @@
-# dwa111-rum-port-0.1
+# rum4linux
 
-Development scaffold for a Linux replacement driver for the D-Link DWA-111 (USB ID `07d1:3c06`) in the style of OpenBSD `rum(4)`.
+Early Linux `mac80211` + `usb_driver` scaffold inspired by OpenBSD `rum(4)`.
 
-This is **not** a finished driver. It is a starting point for a clean-room Linux/mac80211 implementation that borrows the *architecture* of OpenBSD `rum(4)`:
+This repository is being generalized structurally toward the broader `rum(4)` device family. It is **not** a finished driver, and it should not be treated as functional hardware support for the full family yet.
 
-- dedicated USB register access layer
-- firmware upload + post-upload reset path
-- EEPROM parse path
-- BBP/RF init sequencing
-- mac80211 glue kept thin
+## Current scope
 
-## Why this direction?
+Implemented scaffold pieces:
 
-Your logs consistently show:
+- safe probe path with `bind=0` default
+- USB vendor-control register I/O layer with bounded retries
+- EEPROM read/parse subsystem
+- firmware upload scaffold with MCU handoff/wait flow
+- BBP init scaffold with OpenBSD-derived defaults plus EEPROM BBP overrides
+- RF/channel scaffold for RT2528 2.4GHz channel programming with bounded calibration wiring
+- bounded post-channel sanity check and one bounded recovery attempt
+- bounded TX descriptor-construction scaffolding with runtime TX submission intentionally blocked
 
-- `device firmware changed`
-- `Vendor Request 0x09 failed for offset 0x0000 with error -19`
-- later `Vendor Request 0x07 failed for offset 0x3000 with error -19`
-- `rt: 0000, rf: 0000, rev: 0000`
-- `Invalid RT chipset detected`
-- repeated disconnect/re-enumeration with `too many configurations: 60`
+Still intentionally incomplete:
 
-That suggests the current Linux `rt73usb` / `rt2x00` stack is the wrong place to keep patching.
+- full, validated TX descriptor semantics across `rum(4)`-family variants
+- RX datapath and descriptor parsing
+- association / operational station behavior
+- broad USB ID and per-device calibration/firmware coverage
 
-## Safety
+All uncertain behavior remains tagged as `TODO(openbsd-rum-port)`.
 
-This scaffold defaults to **not binding** to the device (`bind=0` module parameter). That is deliberate.
+## Family generalization status
+
+- Module output remains `rum4linux.ko`.
+- DKMS package name remains `rum4linux`.
+- The codebase is now named and organized as a family scaffold, but effective device enablement is still conservative and incremental.
+- If the USB ID table is narrow in code, that is intentional until EEPROM/firmware/RF/TX/RX behavior is validated for additional devices.
+
+## Safety defaults
+
+- Default safety gate is `bind=0` (no attach by default).
+- Functional hardware verification is intentionally deferred at this stage.
 
 ## Layout
 
-- `dkms.conf` — DKMS metadata
-- `Makefile` — Kbuild wrapper
-- `src/dwa111_rum_main.c` — USB + mac80211 scaffold
-- `src/dwa111_rum_hw.c` — hardware-facing stubs
-- `src/dwa111_rum_debug.h` — logging helpers
-- `CODEX_PROMPT.md` — detailed prompt for ChatGPT Codex
-
-## Development milestones
-
-1. USB probe/remove + safe teardown
-2. Control transfer helpers mirroring OpenBSD `rum(4)` register read/write style
-3. Firmware upload and post-upload settle sequence
-4. EEPROM parse and MAC address extraction
-5. BBP/RF init tables
-6. Channel switching
-7. RX/TX descriptor handling
-8. Association in station mode on open/WEP networks
-9. WPA via mac80211 software crypto
-
-## Suggested workflow
-
-1. Keep the in-tree `rt73usb` available until your replacement can at least probe safely.
-2. Develop with `bind=0` first and use dynamic debug / pr_debug.
-3. Once EEPROM parsing works, switch to `bind=1` and blacklist `rt73usb` for controlled tests.
+- `dkms.conf` — DKMS metadata (`rum4linux`)
+- `Makefile` — Kbuild wrapper for `rum4linux.ko`
+- `src/rum4linux_core.c` — USB + mac80211 scaffold entrypoints
+- `src/rum4linux_hw.c` / `src/rum4linux_hw.h` — hardware register/control core
+- `src/rum4linux_eeprom.c` / `src/rum4linux_eeprom.h` — EEPROM subsystem
+- `src/rum4linux_fw.c` / `src/rum4linux_fw.h` — firmware subsystem
+- `src/rum4linux_bbp.c` / `src/rum4linux_bbp.h` — BBP subsystem
+- `src/rum4linux_rf.c` / `src/rum4linux_rf.h` — RF/channel subsystem
+- `src/rum4linux_tx.c` / `src/rum4linux_tx.h` — bounded TX subsystem
+- `src/rum4linux_debug.h` — logging helpers
+- `docs/openbsd-rum-port-notes.md` — reference and limitation notes

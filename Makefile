@@ -1,5 +1,10 @@
-obj-m += dwa111_rum.o
+obj-m += rum4linux.o
 
-dwa111_rum-y := \
-	src/dwa111_rum_main.o \
-	src/dwa111_rum_hw.o
+rum4linux-y := \
+	src/rum4linux_core.o \
+	src/rum4linux_hw.o \
+	src/rum4linux_eeprom.o \
+	src/rum4linux_fw.o \
+	src/rum4linux_bbp.o \
+	src/rum4linux_rf.o \
+	src/rum4linux_tx.o
