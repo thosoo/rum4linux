@@ -23,14 +23,14 @@
   - BBP busy/read/write transaction pattern via `PHY_CSR3`
   - OpenBSD `RT2573_DEF_BBP` default table application
   - EEPROM BBP PROM override handling and structured logging
-- RF/channel scaffolding:
+- RF/channel implementation:
   - strict `rf_rev == RT2528` gate
   - strict 2.4GHz channels 1-14 gate
-  - table-driven per-channel plan structure
+  - confirmed RT2528 table values from Linux `rt73usb` `rf_vals_bg_2528[]`
+  - OpenBSD-style 3-phase RF3 bit2 toggle sequence
 
 ## Still uncertain / intentionally not claimed complete
 
-- exact RT2528 channel RF constants for `RF1..RF4` programming
 - whether additional per-channel calibration writes are required before RF lock
 - complete post-programming verification strategy beyond current sanity checks
 - TX/RX descriptor datapath
@@ -39,7 +39,6 @@ All uncertain parts are tagged in code as `TODO(openbsd-rum-port)` and return tr
 
 ## Next phase recommendation
 
-1. Port/verify RT2528-specific RF constants from trusted references (OpenBSD history + Linux RT73 family references).
-2. Enable confirmed RF writes for channels 1-14 and keep read-back sanity logs.
-3. Add bounded smoke tests for BBP/RF init completion before touching datapath.
-4. Begin TX descriptor scaffolding only after RF/channel programming is confirmed stable.
+1. Validate txpower and freq-offset integration against OpenBSD/Linux behavior for RT2528.
+2. Add broader post-channel sanity checks and recovery hooks for transient RF/BBP failures.
+3. Begin TX descriptor scaffolding only after repeated stable BBP/RF init on real hardware.

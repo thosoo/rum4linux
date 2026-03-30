@@ -20,11 +20,10 @@ Implemented now (Phase 1-6 scaffold):
   - strict RF identity gate (`rf_rev == RT2528`)
   - channels 1-14 routing only
   - table-driven channel plan structure
-  - truthful `-EOPNOTSUPP` return where RT2528 channel constants remain unconfirmed
+  - confirmed RF table for channels 1-14 (RT2528, Linux rt73usb lineage)
 
 Still intentionally incomplete:
 
-- confirmed RT2528 RF constants for actual channel programming writes
 - TX descriptor formatting and datapath
 - RX datapath and descriptor parsing
 - association / operational station functionality
@@ -42,7 +41,7 @@ This scaffold defaults to **not binding** to the device (`bind=0` module paramet
 
 ## Layout
 
-- `dkms.conf` — DKMS metadata (`rum4linux`, module `rum4linux`)
+- `dkms.conf` — DKMS metadata (`rum4linux`, module `rum4linux`, built from module root)
 - `Makefile` — Kbuild wrapper for `rum4linux.ko`
 - `src/dwa111_rum_main.c` — USB + mac80211 scaffold
 - `src/dwa111_rum_hw.c` — hardware init and register I/O core
@@ -57,5 +56,5 @@ This scaffold defaults to **not binding** to the device (`bind=0` module paramet
 1. Keep in-tree `rt73usb` available until replacement init is deterministic.
 2. Develop with `bind=0` first and compare kernel logs carefully.
 3. Validate EEPROM/firmware/BBP sequencing against OpenBSD behavior.
-4. Confirm RT2528 channel constants before enabling real RF writes.
-5. Only then move to TX/RX datapath work.
+4. Validate per-channel RF writes and BBP sanity logs on hardware.
+5. Move next to bounded TX descriptor bring-up once channel stability is confirmed.

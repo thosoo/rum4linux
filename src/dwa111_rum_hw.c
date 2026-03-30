@@ -193,6 +193,7 @@ int dwr_hw_init(struct dwr_dev *dwr)
 	u32 mac_csr0;
 	int ret;
 	u8 default_chan = 1;
+	u8 bbp_r0;
 
 	memset(&dwr->hw_state, 0, sizeof(dwr->hw_state));
 	dwr->hw_state.fw_required = true;
@@ -247,6 +248,13 @@ int dwr_hw_init(struct dwr_dev *dwr)
 		dwr_log_init_summary(dwr);
 		return ret;
 	}
+
+	ret = dwr_bbp_read(dwr, 0, &bbp_r0);
+	if (ret) {
+		dwr_err(&dwr->usb.intf->dev, "post-rf BBP read (R0) failed: %d\n", ret);
+		return ret;
+	}
+	dwr_info(&dwr->usb.intf->dev, "post-rf BBP sanity: R0=0x%02x\n", bbp_r0);
 
 	ret = dwr_read_reg(dwr, DWR_MAC_CSR0, &mac_csr0);
 	if (ret) {
