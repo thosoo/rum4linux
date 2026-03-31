@@ -213,13 +213,15 @@ static int dwr_post_channel_sanity(struct dwr_dev *dwr)
 	return 0;
 }
 
-static int dwr_recover_after_sanity_failure(struct dwr_dev *dwr, u8 chan)
+static int dwr_recover_channel_2ghz_once(struct dwr_dev *dwr, u8 chan,
+					 const char *reason)
 {
 	int ret;
 
 	dwr->hw_state.recovery_attempted = true;
 	dwr_warn(&dwr->usb.intf->dev,
-		 "post-chan sanity failed, attempting bounded recovery\n");
+		 "channel apply (%s) failed, attempting one bounded recovery (chan=%u)\n",
+		 reason, chan);
 
 	ret = dwr_bbp_init(dwr);
 	if (ret)
@@ -233,6 +235,29 @@ static int dwr_recover_after_sanity_failure(struct dwr_dev *dwr, u8 chan)
 	ret = dwr_post_channel_sanity(dwr);
 	if (!ret)
 		dwr->hw_state.recovery_succeeded = true;
+	return ret;
+}
+
+static int dwr_apply_2ghz_rt2528_channel(struct dwr_dev *dwr, u8 chan,
+					 const char *reason)
+{
+	int ret;
+
+	ret = dwr_apply_2ghz_bbp_profile(dwr);
+	if (ret)
+		return ret;
+	ret = dwr_rf_set_channel_2ghz(dwr, chan);
+	if (ret)
+		return ret;
+	ret = dwr_post_channel_sanity(dwr);
+	if (!ret)
+		return 0;
+
+	ret = dwr_recover_channel_2ghz_once(dwr, chan, reason);
+	if (ret)
+		dwr_err(&dwr->usb.intf->dev,
+			"channel apply (%s) failed after bounded recovery chan=%u err=%d\n",
+			reason, chan, ret);
 	return ret;
 }
 
@@ -358,31 +383,12 @@ int dwr_hw_init(struct dwr_dev *dwr)
 		return ret;
 	}
 
-	ret = dwr_apply_2ghz_bbp_profile(dwr);
-	if (ret) {
-		dwr_err(&dwr->usb.intf->dev, "2GHz BBP profile apply failed: %d\n", ret);
-		dwr_log_init_summary(dwr);
-		return ret;
-	}
-
-	ret = dwr_rf_set_channel_2ghz(dwr, default_chan);
+	ret = dwr_apply_2ghz_rt2528_channel(dwr, default_chan, "init");
 	if (ret) {
 		dwr_err(&dwr->usb.intf->dev,
 			"rf/channel init failed for channel %u: %d\n", default_chan, ret);
 		dwr_log_init_summary(dwr);
 		return ret;
-	}
-
-	ret = dwr_post_channel_sanity(dwr);
-	if (ret) {
-		ret = dwr_recover_after_sanity_failure(dwr, default_chan);
-		if (ret) {
-			dwr_err(&dwr->usb.intf->dev,
-				"post-channel sanity/recovery failed for channel %u: %d\n",
-				default_chan, ret);
-			dwr_log_init_summary(dwr);
-			return ret;
-		}
 	}
 	dwr->hw_state.post_fw_sanity_ok = true;
 	dwr->hw_state.hw_init_ok = true;
@@ -412,11 +418,7 @@ int dwr_set_channel(struct dwr_dev *dwr, struct ieee80211_channel *chan)
 		return 0;
 	}
 
-	ret = dwr_apply_2ghz_bbp_profile(dwr);
-	if (ret)
-		return ret;
-
-	return dwr_rf_set_channel_2ghz(dwr, chan->hw_value);
+	return dwr_apply_2ghz_rt2528_channel(dwr, chan->hw_value, "runtime");
 }
 
 int dwr_set_macaddr(struct dwr_dev *dwr, const u8 *addr)
