@@ -208,6 +208,7 @@ static int dwr_mac_start(struct ieee80211_hw *hw)
 static void dwr_mac_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct dwr_dev *dwr = hw_to_dwr(hw);
+	int ret;
 
 	dwr_info(&dwr->usb.intf->dev, "mac80211 stop suspend=%d\n", suspend);
 	dwr->usb.running = false;
