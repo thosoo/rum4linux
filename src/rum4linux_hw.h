@@ -125,6 +125,24 @@
 #define DWR_CHAN_APPLY_ERRCLASS_IO                 4
 #define DWR_CHAN_APPLY_ERRCLASS_SANITY             5
 #define DWR_CHAN_APPLY_ERRCLASS_UNKNOWN            6
+#define DWR_CHAN_APPLY_ORIGIN_NONE                         0
+#define DWR_CHAN_APPLY_ORIGIN_BBP_PROFILE                  1
+#define DWR_CHAN_APPLY_ORIGIN_RF_SET                       2
+#define DWR_CHAN_APPLY_ORIGIN_SANITY_READ_MAC_CSR0         3
+#define DWR_CHAN_APPLY_ORIGIN_SANITY_READ_PHY_CSR4         4
+#define DWR_CHAN_APPLY_ORIGIN_SANITY_READ_BBP0             5
+#define DWR_CHAN_APPLY_ORIGIN_SANITY_READ_BBP3             6
+#define DWR_CHAN_APPLY_ORIGIN_SANITY_PATTERN_INVALID       7
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_BBP_INIT            8
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_BBP_PROFILE         9
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_RF_SET             10
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_MAC_CSR0 11
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_PHY_CSR4 12
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_BBP0   13
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_BBP3   14
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_PATTERN_INVALID 15
+#define DWR_CHAN_APPLY_ORIGIN_UNKNOWN                     16
+#define DWR_CHAN_APPLY_ORIGIN_MAX                         17
 
 struct dwr_eeprom_bbp_word {
 	u8 reg;
@@ -182,10 +200,12 @@ struct dwr_hw_state {
 	u32 channel_apply_errclass_io_count;
 	u32 channel_apply_errclass_sanity_count;
 	u32 channel_apply_errclass_unknown_count;
+	u32 channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_MAX];
 	bool last_channel_apply_was_runtime;
 	u8 last_channel_apply_stage;
 	u8 last_channel_apply_channel;
 	u8 last_channel_apply_errclass;
+	u8 last_channel_apply_origin;
 	int last_channel_apply_err;
 };
 

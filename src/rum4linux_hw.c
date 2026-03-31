@@ -179,7 +179,15 @@ static int dwr_wait_bbprf_awake(struct dwr_dev *dwr)
 	return -ETIMEDOUT;
 }
 
-static int dwr_post_channel_sanity(struct dwr_dev *dwr)
+static void dwr_record_channel_apply_origin(struct dwr_dev *dwr, u8 origin)
+{
+	if (origin >= DWR_CHAN_APPLY_ORIGIN_MAX)
+		origin = DWR_CHAN_APPLY_ORIGIN_UNKNOWN;
+	dwr->hw_state.last_channel_apply_origin = origin;
+	dwr->hw_state.channel_apply_origin_count[origin]++;
+}
+
+static int dwr_post_channel_sanity(struct dwr_dev *dwr, bool recovery)
 {
 	u32 mac_csr0;
 	u32 phy_csr4;
@@ -191,14 +199,30 @@ static int dwr_post_channel_sanity(struct dwr_dev *dwr)
 
 	ret = dwr_read_reg(dwr, DWR_MAC_CSR0, &mac_csr0);
 	if (ret)
+		dwr_record_channel_apply_origin(dwr,
+			recovery ? DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_MAC_CSR0 :
+				   DWR_CHAN_APPLY_ORIGIN_SANITY_READ_MAC_CSR0);
+	if (ret)
 		return ret;
 	ret = dwr_read_reg(dwr, DWR_PHY_CSR4, &phy_csr4);
+	if (ret)
+		dwr_record_channel_apply_origin(dwr,
+			recovery ? DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_PHY_CSR4 :
+				   DWR_CHAN_APPLY_ORIGIN_SANITY_READ_PHY_CSR4);
 	if (ret)
 		return ret;
 	ret = dwr_bbp_read(dwr, 0, &bbp0);
 	if (ret)
+		dwr_record_channel_apply_origin(dwr,
+			recovery ? DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_BBP0 :
+				   DWR_CHAN_APPLY_ORIGIN_SANITY_READ_BBP0);
+	if (ret)
 		return ret;
 	ret = dwr_bbp_read(dwr, 3, &bbp3);
+	if (ret)
+		dwr_record_channel_apply_origin(dwr,
+			recovery ? DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_BBP3 :
+				   DWR_CHAN_APPLY_ORIGIN_SANITY_READ_BBP3);
 	if (ret)
 		return ret;
 
@@ -207,8 +231,12 @@ static int dwr_post_channel_sanity(struct dwr_dev *dwr)
 		 mac_csr0, phy_csr4, bbp0, bbp3);
 
 	if (!mac_csr0 || mac_csr0 == 0xffffffff || bbp0 == 0x00 || bbp0 == 0xff ||
-	    bbp3 == 0x00 || bbp3 == 0xff)
+	    bbp3 == 0x00 || bbp3 == 0xff) {
+		dwr_record_channel_apply_origin(dwr,
+			recovery ? DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_PATTERN_INVALID :
+				   DWR_CHAN_APPLY_ORIGIN_SANITY_PATTERN_INVALID);
 		return -EIO;
+	}
 
 	dwr->hw_state.mac_csr0_after_fw = mac_csr0;
 	return 0;
@@ -233,6 +261,46 @@ static const char *dwr_channel_apply_stage_name(u8 stage)
 		return "recovery_post_sanity";
 	default:
 		return "none";
+	}
+}
+
+static const char *dwr_channel_apply_origin_name(u8 origin)
+{
+	switch (origin) {
+	case DWR_CHAN_APPLY_ORIGIN_NONE:
+		return "none";
+	case DWR_CHAN_APPLY_ORIGIN_BBP_PROFILE:
+		return "bbp_profile";
+	case DWR_CHAN_APPLY_ORIGIN_RF_SET:
+		return "rf_set";
+	case DWR_CHAN_APPLY_ORIGIN_SANITY_READ_MAC_CSR0:
+		return "sanity_read_mac_csr0";
+	case DWR_CHAN_APPLY_ORIGIN_SANITY_READ_PHY_CSR4:
+		return "sanity_read_phy_csr4";
+	case DWR_CHAN_APPLY_ORIGIN_SANITY_READ_BBP0:
+		return "sanity_read_bbp0";
+	case DWR_CHAN_APPLY_ORIGIN_SANITY_READ_BBP3:
+		return "sanity_read_bbp3";
+	case DWR_CHAN_APPLY_ORIGIN_SANITY_PATTERN_INVALID:
+		return "sanity_pattern_invalid";
+	case DWR_CHAN_APPLY_ORIGIN_RECOVERY_BBP_INIT:
+		return "recovery_bbp_init";
+	case DWR_CHAN_APPLY_ORIGIN_RECOVERY_BBP_PROFILE:
+		return "recovery_bbp_profile";
+	case DWR_CHAN_APPLY_ORIGIN_RECOVERY_RF_SET:
+		return "recovery_rf_set";
+	case DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_MAC_CSR0:
+		return "recovery_sanity_read_mac_csr0";
+	case DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_PHY_CSR4:
+		return "recovery_sanity_read_phy_csr4";
+	case DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_BBP0:
+		return "recovery_sanity_read_bbp0";
+	case DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_BBP3:
+		return "recovery_sanity_read_bbp3";
+	case DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_PATTERN_INVALID:
+		return "recovery_sanity_pattern_invalid";
+	default:
+		return "unknown";
 	}
 }
 
@@ -320,6 +388,7 @@ static int dwr_recover_channel_2ghz_once(struct dwr_dev *dwr, u8 chan,
 	dwr->hw_state.last_channel_apply_was_runtime = runtime;
 	dwr->hw_state.last_channel_apply_channel = chan;
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_INIT;
+	dwr_record_channel_apply_origin(dwr, DWR_CHAN_APPLY_ORIGIN_RECOVERY_BBP_INIT);
 	ret = dwr_bbp_init(dwr);
 	if (ret) {
 		dwr->hw_state.channel_recovery_failure_count++;
@@ -327,6 +396,7 @@ static int dwr_recover_channel_2ghz_once(struct dwr_dev *dwr, u8 chan,
 		return ret;
 	}
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_PROFILE;
+	dwr_record_channel_apply_origin(dwr, DWR_CHAN_APPLY_ORIGIN_RECOVERY_BBP_PROFILE);
 	ret = dwr_apply_2ghz_bbp_profile(dwr);
 	if (ret) {
 		dwr->hw_state.channel_recovery_failure_count++;
@@ -334,6 +404,7 @@ static int dwr_recover_channel_2ghz_once(struct dwr_dev *dwr, u8 chan,
 		return ret;
 	}
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_RF_SET;
+	dwr_record_channel_apply_origin(dwr, DWR_CHAN_APPLY_ORIGIN_RECOVERY_RF_SET);
 	ret = dwr_rf_set_channel_2ghz(dwr, chan);
 	if (ret) {
 		dwr->hw_state.channel_recovery_failure_count++;
@@ -341,12 +412,13 @@ static int dwr_recover_channel_2ghz_once(struct dwr_dev *dwr, u8 chan,
 		return ret;
 	}
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_POST_SANITY;
-	ret = dwr_post_channel_sanity(dwr);
+	ret = dwr_post_channel_sanity(dwr, true);
 	if (!ret) {
 		dwr->hw_state.recovery_succeeded = true;
 		dwr->hw_state.channel_recovery_success_count++;
 		dwr->hw_state.last_channel_apply_err = 0;
 		dwr->hw_state.last_channel_apply_errclass = DWR_CHAN_APPLY_ERRCLASS_NONE;
+		dwr_record_channel_apply_origin(dwr, DWR_CHAN_APPLY_ORIGIN_NONE);
 	}
 	if (ret) {
 		dwr->hw_state.channel_recovery_failure_count++;
@@ -370,18 +442,21 @@ static int dwr_apply_2ghz_rt2528_channel(struct dwr_dev *dwr, u8 chan,
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_BBP_PROFILE;
 	dwr->hw_state.last_channel_apply_err = 0;
 	dwr->hw_state.last_channel_apply_errclass = DWR_CHAN_APPLY_ERRCLASS_NONE;
+	dwr_record_channel_apply_origin(dwr, DWR_CHAN_APPLY_ORIGIN_BBP_PROFILE);
 
 	ret = dwr_apply_2ghz_bbp_profile(dwr);
 	if (ret)
 		goto fail_before_recovery;
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RF_SET;
+	dwr_record_channel_apply_origin(dwr, DWR_CHAN_APPLY_ORIGIN_RF_SET);
 	ret = dwr_rf_set_channel_2ghz(dwr, chan);
 	if (ret)
 		goto fail_before_recovery;
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_POST_SANITY;
-	ret = dwr_post_channel_sanity(dwr);
+	ret = dwr_post_channel_sanity(dwr, false);
 	if (!ret) {
 		dwr->hw_state.channel_apply_first_pass_success_count++;
+		dwr_record_channel_apply_origin(dwr, DWR_CHAN_APPLY_ORIGIN_NONE);
 		dwr_dbg(&dwr->usb.intf->dev,
 			"channel apply (%s) first-pass success chan=%u\n",
 			reason, chan);
@@ -392,20 +467,22 @@ fail_before_recovery:
 	dwr->hw_state.channel_apply_failure_count++;
 	dwr_record_channel_apply_error(dwr, ret);
 	dwr_warn(&dwr->usb.intf->dev,
-		 "channel apply (%s) first-pass failure chan=%u stage=%s err=%d class=%s; recovery=1\n",
+		 "channel apply (%s) first-pass failure chan=%u stage=%s err=%d class=%s origin=%s; recovery=1\n",
 		 reason, chan,
 		 dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage),
 		 ret,
-		 dwr_channel_apply_errclass_name(dwr->hw_state.last_channel_apply_errclass));
+		 dwr_channel_apply_errclass_name(dwr->hw_state.last_channel_apply_errclass),
+		 dwr_channel_apply_origin_name(dwr->hw_state.last_channel_apply_origin));
 
 	ret = dwr_recover_channel_2ghz_once(dwr, chan, runtime, reason);
 	if (ret)
 		dwr_err(&dwr->usb.intf->dev,
-			"channel apply (%s) failed after bounded recovery chan=%u stage=%s err=%d class=%s\n",
+			"channel apply (%s) failed after bounded recovery chan=%u stage=%s err=%d class=%s origin=%s\n",
 			reason, chan,
 			dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage),
 		 ret,
-		 dwr_channel_apply_errclass_name(dwr->hw_state.last_channel_apply_errclass));
+		 dwr_channel_apply_errclass_name(dwr->hw_state.last_channel_apply_errclass),
+		 dwr_channel_apply_origin_name(dwr->hw_state.last_channel_apply_origin));
 	else
 		dwr_info(&dwr->usb.intf->dev,
 			 "channel apply (%s) recovered chan=%u stage=%s rec_attempt=1 rec_ok=1\n",
@@ -418,7 +495,7 @@ fail_before_recovery:
 void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason)
 {
 	dwr_info(&dwr->usb.intf->dev,
-		 "channel apply summary (%s): init=%u runtime=%u first_pass_ok=%u first_pass_fail=%u rec_attempt=%u rec_ok=%u rec_fail=%u class_invalid=%u class_unsupported=%u class_timeout=%u class_io=%u class_sanity=%u class_unknown=%u last_runtime=%u last_chan=%u last_stage=%s last_err=%d last_class=%s\n",
+		 "channel apply summary (%s): init=%u runtime=%u first_pass_ok=%u first_pass_fail=%u rec_attempt=%u rec_ok=%u rec_fail=%u class_invalid=%u class_unsupported=%u class_timeout=%u class_io=%u class_sanity=%u class_unknown=%u origin_bbp=%u origin_rf=%u origin_sanity_mac=%u origin_sanity_phy=%u origin_sanity_bbp0=%u origin_sanity_bbp3=%u origin_sanity_pattern=%u origin_rec_bbp_init=%u origin_rec_bbp=%u origin_rec_rf=%u origin_rec_sanity_mac=%u origin_rec_sanity_phy=%u origin_rec_sanity_bbp0=%u origin_rec_sanity_bbp3=%u origin_rec_sanity_pattern=%u origin_unknown=%u last_runtime=%u last_chan=%u last_stage=%s last_err=%d last_class=%s last_origin=%s\n",
 		 reason,
 		 dwr->hw_state.init_channel_apply_count,
 		 dwr->hw_state.runtime_channel_apply_count,
@@ -433,11 +510,28 @@ void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason)
 		 dwr->hw_state.channel_apply_errclass_io_count,
 		 dwr->hw_state.channel_apply_errclass_sanity_count,
 		 dwr->hw_state.channel_apply_errclass_unknown_count,
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_BBP_PROFILE],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_RF_SET],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_SANITY_READ_MAC_CSR0],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_SANITY_READ_PHY_CSR4],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_SANITY_READ_BBP0],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_SANITY_READ_BBP3],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_SANITY_PATTERN_INVALID],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_RECOVERY_BBP_INIT],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_RECOVERY_BBP_PROFILE],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_RECOVERY_RF_SET],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_MAC_CSR0],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_PHY_CSR4],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_BBP0],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_BBP3],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_PATTERN_INVALID],
+		 dwr->hw_state.channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_UNKNOWN],
 		 dwr->hw_state.last_channel_apply_was_runtime,
 		 dwr->hw_state.last_channel_apply_channel,
 		 dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage),
 		 dwr->hw_state.last_channel_apply_err,
-		 dwr_channel_apply_errclass_name(dwr->hw_state.last_channel_apply_errclass));
+		 dwr_channel_apply_errclass_name(dwr->hw_state.last_channel_apply_errclass),
+		 dwr_channel_apply_origin_name(dwr->hw_state.last_channel_apply_origin));
 }
 
 static void dwr_log_init_summary(struct dwr_dev *dwr)
