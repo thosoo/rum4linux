@@ -54,6 +54,7 @@ This is a structural generalization pass, not a claim of broad functional enable
   - conservative TX retry-limit/fallback programming via TXRX_CSR4 (OpenBSD MRR naming and rt73usb OFDM-down/fallback naming treated as aliases for shared bits)
   - TX status reports attempted rate/count but does not claim ACK success without hardware feedback
   - OpenBSD rum(4) path exposes USB completion for TX but no host-visible per-frame ACK/retry result; current Linux port keeps that limitation explicit
+  - advertised/operational TX rates are now narrowed to truthful CCK-only (1/2/5.5/11 Mbps) for the current minimal descriptor path; OFDM TX remains deferred
   - RX CCK rate decode follows rum_rxrate()/rt73 semantics (raw 100kbps values 10/20/55/110) with conservative OFDM PLCP mapping
   - station-stop/disconnect logging now includes source-backed STA_CSR0/STA_CSR1 error counters (FCS/PLCP/physical/false-CCA)
   - RX filter parity tightened to rt73usb station behavior (DROP_ACK_CTS follows FIF_CONTROL; DROP_CONTROL follows FIF_CONTROL|FIF_PSPOLL)
@@ -67,6 +68,7 @@ This is a structural generalization pass, not a claim of broad functional enable
 - complete TX descriptor and hardware ACK/retry status coverage for all `rum(4)`-family variants
 - confirmed RT2573 host-visible TX-result ingestion path (ACK/retry/failure truth) still not wired in this non-rt2x00 port
 - TX rate programming beyond conservative CCK mappings used by the current minimal descriptor path
+- OFDM RX decode remains conservative/source-backed, but OFDM TX descriptor/status plumbing is intentionally not exposed yet
 - high-confidence RX descriptor validation across additional variants/revisions beyond the current conservative mapping
 - association / operational station behavior
 - full source-backed validation of runtime timing defaults (ACK timeout/TSF offset/EIFS constants) across revisions

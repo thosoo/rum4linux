@@ -20,14 +20,6 @@ static struct ieee80211_rate dwr_rates_2ghz[] = {
 	{ .bitrate = 20,  .hw_value = 1 },
 	{ .bitrate = 55,  .hw_value = 2 },
 	{ .bitrate = 110, .hw_value = 3 },
-	{ .bitrate = 60,  .hw_value = 4 },
-	{ .bitrate = 90,  .hw_value = 5 },
-	{ .bitrate = 120, .hw_value = 6 },
-	{ .bitrate = 180, .hw_value = 7 },
-	{ .bitrate = 240, .hw_value = 8 },
-	{ .bitrate = 360, .hw_value = 9 },
-	{ .bitrate = 480, .hw_value = 10 },
-	{ .bitrate = 540, .hw_value = 11 },
 };
 
 #define DWR_CHAN(_idx, _freq) { .band = NL80211_BAND_2GHZ, .center_freq = (_freq), .hw_value = (_idx), .max_power = 20 }

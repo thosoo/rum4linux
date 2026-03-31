@@ -20,6 +20,7 @@ Implemented scaffold pieces:
 - bounded RX bulk-IN URB pipeline with strict descriptor/frame sanity checks and conservative mac80211 delivery
 - minimal station-mode interface/BSSID runtime programming hooks, including BSSID clear on disassociation/teardown
 - source-backed station runtime register programming for MAC address, RX filter, basic rates, TSF sync, and ERP timing knobs
+- truthful current TX rate surface: only 2.4GHz CCK (1/2/5.5/11 Mbps) is advertised/operational for the narrow descriptor path; OFDM TX remains deferred
 - probe-time EEPROM MAC adoption for mac80211/hardware identity coherence (random fallback only on EEPROM failure)
 - RUN-state sequencing now mirrors OpenBSD rum(4) ordering for channel/slot/MRR/preamble/basic-rates/BSSID/TSF sync and aborts TSF sync on RUN exit
 - conservative TX retry-limit/fallback plumbing now programs confirmed TXRX_CSR4 fields; TX status still avoids claiming ACK success without hardware feedback
@@ -33,6 +34,7 @@ Implemented scaffold pieces:
 Still intentionally incomplete:
 
 - full, validated TX descriptor/status semantics across `rum(4)`-family variants
+- OFDM TX descriptor/status support is still deferred; OFDM rates may be RX-decoded but are not advertised as TX-operational in this narrow station path
 - full RX descriptor confidence across all rum(4)-family variants
 - full confirmation of all RT2573 RXD_W0_DROP causes remains TODO(openbsd-rum-port); current mapping treats it as PLCP/PHY-failure class only for narrow filter coherence
 - association / operational station behavior
