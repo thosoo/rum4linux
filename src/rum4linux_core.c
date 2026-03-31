@@ -203,6 +203,7 @@ static void dwr_mac_stop(struct ieee80211_hw *hw, bool suspend)
 	dwr_leave_run_state(dwr, "stop");
 	dwr_rx_stop(dwr);
 	dwr_rx_log_summary(dwr, "mac_stop");
+	dwr_log_channel_apply_summary(dwr, "mac_stop");
 	dwr_log_sta_rx_counters(dwr, "mac_stop");
 	dwr_tx_cancel_pending(dwr);
 	dwr_hw_stop(dwr);
@@ -516,6 +517,7 @@ static void dwr_usb_disconnect(struct usb_interface *intf)
 	dwr_leave_run_state(dwr, "disconnect");
 	dwr_rx_stop(dwr);
 	dwr_rx_log_summary(dwr, "disconnect");
+	dwr_log_channel_apply_summary(dwr, "disconnect");
 	dwr_log_sta_rx_counters(dwr, "disconnect");
 	dwr_tx_cancel_pending(dwr);
 	cancel_work_sync(&dwr->reset_work);

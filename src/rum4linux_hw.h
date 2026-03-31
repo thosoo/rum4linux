@@ -110,6 +110,14 @@
 #define DWR_EEPROM_TXPOWER_CHANS_2G  14
 #define DWR_EEPROM_BBP_PROM_ENTRIES  16
 #define DWR_LINK_RSSI_INVALID_DBM    (-128)
+#define DWR_CHAN_APPLY_STAGE_NONE                  0
+#define DWR_CHAN_APPLY_STAGE_BBP_PROFILE           1
+#define DWR_CHAN_APPLY_STAGE_RF_SET                2
+#define DWR_CHAN_APPLY_STAGE_POST_SANITY           3
+#define DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_INIT     4
+#define DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_PROFILE  5
+#define DWR_CHAN_APPLY_STAGE_RECOVERY_RF_SET       6
+#define DWR_CHAN_APPLY_STAGE_RECOVERY_POST_SANITY  7
 
 struct dwr_eeprom_bbp_word {
 	u8 reg;
@@ -154,6 +162,17 @@ struct dwr_hw_state {
 	u32 mac_csr0_before_fw;
 	u32 mac_csr0_after_fw;
 	u32 txrx_csr0_before_fw;
+	u32 init_channel_apply_count;
+	u32 runtime_channel_apply_count;
+	u32 channel_apply_first_pass_success_count;
+	u32 channel_apply_failure_count;
+	u32 channel_recovery_attempt_count;
+	u32 channel_recovery_success_count;
+	u32 channel_recovery_failure_count;
+	bool last_channel_apply_was_runtime;
+	u8 last_channel_apply_stage;
+	u8 last_channel_apply_channel;
+	int last_channel_apply_err;
 };
 
 struct dwr_usb_state {
@@ -228,5 +247,6 @@ int dwr_set_rx_timing_defaults(struct dwr_dev *dwr);
 int dwr_read_rx_error_counters(struct dwr_dev *dwr, u16 *fcs_err,
 			       u16 *plcp_err, u16 *physical_err,
 			       u16 *false_cca);
+void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason);
 
 #endif

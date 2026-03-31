@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
+#include <linux/string.h>
 #include "rum4linux_hw.h"
 #include "rum4linux_debug.h"
 #include "rum4linux_eeprom.h"
@@ -213,52 +214,149 @@ static int dwr_post_channel_sanity(struct dwr_dev *dwr)
 	return 0;
 }
 
+static const char *dwr_channel_apply_stage_name(u8 stage)
+{
+	switch (stage) {
+	case DWR_CHAN_APPLY_STAGE_BBP_PROFILE:
+		return "bbp_profile";
+	case DWR_CHAN_APPLY_STAGE_RF_SET:
+		return "rf_set";
+	case DWR_CHAN_APPLY_STAGE_POST_SANITY:
+		return "post_sanity";
+	case DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_INIT:
+		return "recovery_bbp_init";
+	case DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_PROFILE:
+		return "recovery_bbp_profile";
+	case DWR_CHAN_APPLY_STAGE_RECOVERY_RF_SET:
+		return "recovery_rf_set";
+	case DWR_CHAN_APPLY_STAGE_RECOVERY_POST_SANITY:
+		return "recovery_post_sanity";
+	default:
+		return "none";
+	}
+}
+
 static int dwr_recover_channel_2ghz_once(struct dwr_dev *dwr, u8 chan,
-					 const char *reason)
+					 bool runtime, const char *reason)
 {
 	int ret;
 
 	dwr->hw_state.recovery_attempted = true;
+	dwr->hw_state.channel_recovery_attempt_count++;
 	dwr_warn(&dwr->usb.intf->dev,
 		 "channel apply (%s) failed, attempting one bounded recovery (chan=%u)\n",
 		 reason, chan);
 
+	dwr->hw_state.last_channel_apply_was_runtime = runtime;
+	dwr->hw_state.last_channel_apply_channel = chan;
+	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_INIT;
 	ret = dwr_bbp_init(dwr);
-	if (ret)
+	if (ret) {
+		dwr->hw_state.channel_recovery_failure_count++;
+		dwr->hw_state.last_channel_apply_err = ret;
 		return ret;
+	}
+	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_PROFILE;
 	ret = dwr_apply_2ghz_bbp_profile(dwr);
-	if (ret)
+	if (ret) {
+		dwr->hw_state.channel_recovery_failure_count++;
+		dwr->hw_state.last_channel_apply_err = ret;
 		return ret;
+	}
+	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_RF_SET;
 	ret = dwr_rf_set_channel_2ghz(dwr, chan);
-	if (ret)
+	if (ret) {
+		dwr->hw_state.channel_recovery_failure_count++;
+		dwr->hw_state.last_channel_apply_err = ret;
 		return ret;
+	}
+	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_POST_SANITY;
 	ret = dwr_post_channel_sanity(dwr);
-	if (!ret)
+	if (!ret) {
 		dwr->hw_state.recovery_succeeded = true;
+		dwr->hw_state.channel_recovery_success_count++;
+		dwr->hw_state.last_channel_apply_err = 0;
+	}
+	if (ret) {
+		dwr->hw_state.channel_recovery_failure_count++;
+		dwr->hw_state.last_channel_apply_err = ret;
+	}
 	return ret;
 }
 
 static int dwr_apply_2ghz_rt2528_channel(struct dwr_dev *dwr, u8 chan,
 					 const char *reason)
 {
+	bool runtime = !strcmp(reason, "runtime");
 	int ret;
+
+	if (runtime)
+		dwr->hw_state.runtime_channel_apply_count++;
+	else
+		dwr->hw_state.init_channel_apply_count++;
+	dwr->hw_state.last_channel_apply_was_runtime = runtime;
+	dwr->hw_state.last_channel_apply_channel = chan;
+	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_BBP_PROFILE;
+	dwr->hw_state.last_channel_apply_err = 0;
 
 	ret = dwr_apply_2ghz_bbp_profile(dwr);
 	if (ret)
-		return ret;
+		goto fail_before_recovery;
+	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RF_SET;
 	ret = dwr_rf_set_channel_2ghz(dwr, chan);
 	if (ret)
-		return ret;
+		goto fail_before_recovery;
+	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_POST_SANITY;
 	ret = dwr_post_channel_sanity(dwr);
-	if (!ret)
+	if (!ret) {
+		dwr->hw_state.channel_apply_first_pass_success_count++;
+		dwr_dbg(&dwr->usb.intf->dev,
+			"channel apply (%s) first-pass success chan=%u\n",
+			reason, chan);
 		return 0;
+	}
 
-	ret = dwr_recover_channel_2ghz_once(dwr, chan, reason);
+fail_before_recovery:
+	dwr->hw_state.channel_apply_failure_count++;
+	dwr->hw_state.last_channel_apply_err = ret;
+	dwr_warn(&dwr->usb.intf->dev,
+		 "channel apply (%s) first-pass failure chan=%u stage=%s err=%d; recovery=1\n",
+		 reason, chan,
+		 dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage),
+		 ret);
+
+	ret = dwr_recover_channel_2ghz_once(dwr, chan, runtime, reason);
 	if (ret)
 		dwr_err(&dwr->usb.intf->dev,
-			"channel apply (%s) failed after bounded recovery chan=%u err=%d\n",
-			reason, chan, ret);
+			"channel apply (%s) failed after bounded recovery chan=%u stage=%s err=%d\n",
+			reason, chan,
+			dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage),
+		 ret);
+	else
+		dwr_info(&dwr->usb.intf->dev,
+			 "channel apply (%s) recovered chan=%u stage=%s\n",
+			 reason, chan,
+			 dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage));
+
 	return ret;
+}
+
+void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason)
+{
+	dwr_info(&dwr->usb.intf->dev,
+		 "channel apply summary (%s): init=%u runtime=%u first_pass_ok=%u first_pass_fail=%u rec_attempt=%u rec_ok=%u rec_fail=%u last_runtime=%u last_chan=%u last_stage=%s last_err=%d\n",
+		 reason,
+		 dwr->hw_state.init_channel_apply_count,
+		 dwr->hw_state.runtime_channel_apply_count,
+		 dwr->hw_state.channel_apply_first_pass_success_count,
+		 dwr->hw_state.channel_apply_failure_count,
+		 dwr->hw_state.channel_recovery_attempt_count,
+		 dwr->hw_state.channel_recovery_success_count,
+		 dwr->hw_state.channel_recovery_failure_count,
+		 dwr->hw_state.last_channel_apply_was_runtime,
+		 dwr->hw_state.last_channel_apply_channel,
+		 dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage),
+		 dwr->hw_state.last_channel_apply_err);
 }
 
 static void dwr_log_init_summary(struct dwr_dev *dwr)
@@ -271,6 +369,7 @@ static void dwr_log_init_summary(struct dwr_dev *dwr)
 		 dwr->hw_state.post_fw_sanity_ok, dwr->hw_state.post_chan_sanity_attempted,
 		 dwr->hw_state.recovery_attempted, dwr->hw_state.recovery_succeeded,
 		 dwr->mac_addr, dwr->eeprom.rf_rev);
+	dwr_log_channel_apply_summary(dwr, "init");
 }
 
 int dwr_apply_2ghz_bbp_profile(struct dwr_dev *dwr)

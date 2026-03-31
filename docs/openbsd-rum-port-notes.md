@@ -56,6 +56,7 @@ This is a structural generalization pass, not a claim of broad functional enable
   - OpenBSD rum(4) path exposes USB completion for TX but no host-visible per-frame ACK/retry result; current Linux port keeps that limitation explicit
   - advertised/operational TX rates are now narrowed to truthful CCK-only (1/2/5.5/11 Mbps) for the current minimal descriptor path; OFDM TX remains deferred
   - initial bring-up and runtime channel transitions now use the same bounded 2.4GHz apply path (BBP profile, RF program, post-channel sanity, one bounded recovery attempt)
+  - channel-apply diagnostics now keep bounded counters and last-stage tagging (init/runtime split, first-pass failures, recovery attempt/success/failure, last channel/stage/error)
   - RX CCK rate decode follows rum_rxrate()/rt73 semantics (raw 100kbps values 10/20/55/110) with conservative OFDM PLCP mapping
   - station-stop/disconnect logging now includes source-backed STA_CSR0/STA_CSR1 error counters (FCS/PLCP/physical/false-CCA)
   - RX filter parity tightened to rt73usb station behavior (DROP_ACK_CTS follows FIF_CONTROL; DROP_CONTROL follows FIF_CONTROL|FIF_PSPOLL)
