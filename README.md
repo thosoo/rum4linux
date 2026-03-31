@@ -28,11 +28,13 @@ Implemented scaffold pieces:
 - station RX filter parity tightened to rt73usb semantics (ACK/CTS follows FIF_CONTROL, control follows FIF_CONTROL|FIF_PSPOLL)
 - conservative BBP17/VGC tuner added for the narrow associated station path using source-backed RSSI/FCS/false-CCA inputs (false_cca > 512 raises gain, < 100 lowers gain within guarded bounds)
 - BBP17 tuner now keys off the current 2.4GHz base profile value instead of a hardcoded 0x20 baseline
+- RX software delivery is now coherent with configured FIF_FCSFAIL / FIF_PLCPFAIL policy: allowed failed frames are delivered with mac80211 failure flags and counted separately
 
 Still intentionally incomplete:
 
 - full, validated TX descriptor/status semantics across `rum(4)`-family variants
 - full RX descriptor confidence across all rum(4)-family variants
+- full confirmation of all RT2573 RXD_W0_DROP causes remains TODO(openbsd-rum-port); current mapping treats it as PLCP/PHY-failure class only for narrow filter coherence
 - association / operational station behavior
 - broad USB ID and per-device calibration/firmware coverage
 

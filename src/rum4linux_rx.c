@@ -7,6 +7,11 @@
 #include "rum4linux_rx.h"
 #include "rum4linux_debug.h"
 
+#ifndef RX_FLAG_FAILED_PLCP_CRC
+#define RX_FLAG_FAILED_PLCP_CRC 0
+/* TODO(openbsd-rum-port): require explicit PLCP failure flag once minimum kernel baseline is fixed. */
+#endif
+
 /*
  * Conservative RT2573/rum-style receive parsing notes:
  * - Linux rt73usb processes RX descriptor words 0/1 for byte-count, CRC, and PHY fields.
@@ -103,6 +108,10 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	u8 frame_offset;
 	int rate_idx;
 	bool ofdm;
+	bool crc_error;
+	bool drop_error;
+	bool allow_fcs_fail;
+	bool allow_plcp_fail;
 	int min_total;
 
 	if (actual_len < DWR_RX_DESC_LEN) {
@@ -120,6 +129,10 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	rssi = FIELD_GET(DWR_RXD_W1_RSSI_MASK, word1);
 	frame_offset = FIELD_GET(DWR_RXD_W1_FRAME_OFFSET_MASK, word1);
 	ofdm = !!(word0 & DWR_RXD_W0_OFDM);
+	crc_error = !!(word0 & DWR_RXD_W0_CRC_ERROR);
+	drop_error = !!(word0 & DWR_RXD_W0_DROP);
+	allow_fcs_fail = !!(READ_ONCE(dwr->filter_flags) & FIF_FCSFAIL);
+	allow_plcp_fail = !!(READ_ONCE(dwr->filter_flags) & FIF_PLCPFAIL);
 
 	/* TODO(openbsd-rum-port): confirm frame_offset semantics for all rum(4)-family revisions. */
 	min_total = DWR_RX_DESC_LEN + frame_offset + data_len;
@@ -131,13 +144,27 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 		return false;
 	}
 
-	if (word0 & (DWR_RXD_W0_DROP | DWR_RXD_W0_CRC_ERROR)) {
+	if (crc_error && !allow_fcs_fail) {
+		atomic_inc(&dwr->rx.stats.drop_failed_fcs_filtered);
+		dwr_dbg(&dwr->usb.intf->dev,
+			"rx urb[%u] drop failed-FCS by filter policy signal=%u ofdm=%u data_len=%u\n",
+			slot->index, signal, ofdm, data_len);
+		return false;
+	}
+
+	/*
+	 * Linux rt73 descriptor exposes RXD_W0_DROP as a broad drop/error bit.
+	 * For this narrow path, treat it as PLCP/PHY-failure class only when
+	 * FIF_PLCPFAIL requests those frames; broader semantics remain unknown.
+	 * TODO(openbsd-rum-port): confirm all RXD_W0_DROP causes on RT2573.
+	 */
+	if (drop_error && !allow_plcp_fail) {
+		atomic_inc(&dwr->rx.stats.drop_failed_plcp_filtered);
 		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] reject flags drop=%u crc=%u ofdm=%u signal=%u rssi=%d data_len=%u\n",
+			"rx urb[%u] drop failed-PLCP/PHY by filter policy drop=%u crc=%u ofdm=%u signal=%u rssi=%d data_len=%u\n",
 			slot->index,
-			!!(word0 & DWR_RXD_W0_DROP),
-			!!(word0 & DWR_RXD_W0_CRC_ERROR),
+			drop_error, crc_error,
 				ofdm,
 				signal, rssi, data_len);
 		return false;
@@ -167,6 +194,10 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	status->rate_idx = rate_idx;
 	status->freq = ieee80211_channel_to_frequency(dwr->hw_state.current_channel,
 						      NL80211_BAND_2GHZ);
+	if (crc_error)
+		status->flag |= RX_FLAG_FAILED_FCS_CRC;
+	if (drop_error)
+		status->flag |= RX_FLAG_FAILED_PLCP_CRC;
 
 	dwr_dbg(&dwr->usb.intf->dev,
 		"rx urb[%u] desc ok word0=0x%08x word1=0x%08x data_len=%u frame_off=%u ofdm=%u signal=%u rssi=%d\n",
@@ -200,6 +231,18 @@ static void dwr_rx_deliver_frame(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	skb_reserve(skb, 2);
 	skb_put_data(skb, &slot->buf[frame_off], frame_len);
 	memcpy(IEEE80211_SKB_RXCB(skb), &status, sizeof(status));
+	if (status.flag & RX_FLAG_FAILED_FCS_CRC) {
+		atomic_inc(&dwr->rx.stats.delivered_failed_fcs);
+		dwr_dbg(&dwr->usb.intf->dev,
+			"rx urb[%u] delivering failed-FCS frame len=%d\n",
+			slot->index, frame_len);
+	}
+	if (status.flag & RX_FLAG_FAILED_PLCP_CRC) {
+		atomic_inc(&dwr->rx.stats.delivered_failed_plcp);
+		dwr_dbg(&dwr->usb.intf->dev,
+			"rx urb[%u] delivering failed-PLCP/PHY frame len=%d\n",
+			slot->index, frame_len);
+	}
 	ieee80211_rx_irqsafe(dwr->hw, skb);
 	atomic_inc(&dwr->rx.stats.delivered);
 }
@@ -243,6 +286,10 @@ void dwr_rx_init_state(struct dwr_dev *dwr)
 	atomic_set(&dwr->rx.stats.urbs_resubmitted, 0);
 	atomic_set(&dwr->rx.stats.drop_short, 0);
 	atomic_set(&dwr->rx.stats.drop_bad_desc, 0);
+	atomic_set(&dwr->rx.stats.drop_failed_fcs_filtered, 0);
+	atomic_set(&dwr->rx.stats.drop_failed_plcp_filtered, 0);
+	atomic_set(&dwr->rx.stats.delivered_failed_fcs, 0);
+	atomic_set(&dwr->rx.stats.delivered_failed_plcp, 0);
 	atomic_set(&dwr->rx.stats.delivered, 0);
 	for (i = 0; i < DWR_RX_URB_COUNT; i++) {
 		dwr->rx.slots[i].index = i;
@@ -315,12 +362,16 @@ void dwr_rx_stop(struct dwr_dev *dwr)
 void dwr_rx_log_summary(struct dwr_dev *dwr, const char *reason)
 {
 	dwr_info(&dwr->usb.intf->dev,
-		 "rx summary (%s): submitted=%d completed=%d resubmitted=%d drop_short=%d drop_bad_desc=%d delivered=%d\n",
+		 "rx summary (%s): submitted=%d completed=%d resubmitted=%d drop_short=%d drop_bad_desc=%d drop_fcs_filtered=%d drop_plcp_filtered=%d delivered=%d delivered_fcs_fail=%d delivered_plcp_fail=%d\n",
 		 reason,
 		 atomic_read(&dwr->rx.stats.urbs_submitted),
 		 atomic_read(&dwr->rx.stats.urbs_completed),
 		 atomic_read(&dwr->rx.stats.urbs_resubmitted),
 		 atomic_read(&dwr->rx.stats.drop_short),
 		 atomic_read(&dwr->rx.stats.drop_bad_desc),
-		 atomic_read(&dwr->rx.stats.delivered));
+		 atomic_read(&dwr->rx.stats.drop_failed_fcs_filtered),
+		 atomic_read(&dwr->rx.stats.drop_failed_plcp_filtered),
+		 atomic_read(&dwr->rx.stats.delivered),
+		 atomic_read(&dwr->rx.stats.delivered_failed_fcs),
+		 atomic_read(&dwr->rx.stats.delivered_failed_plcp));
 }

@@ -17,6 +17,10 @@ struct dwr_rx_stats {
 	atomic_t urbs_resubmitted;
 	atomic_t drop_short;
 	atomic_t drop_bad_desc;
+	atomic_t drop_failed_fcs_filtered;
+	atomic_t drop_failed_plcp_filtered;
+	atomic_t delivered_failed_fcs;
+	atomic_t delivered_failed_plcp;
 	atomic_t delivered;
 };
 
