@@ -107,6 +107,7 @@
 #define DWR_EEPROM_RAW_CACHE_LEN     256
 #define DWR_EEPROM_TXPOWER_CHANS_2G  14
 #define DWR_EEPROM_BBP_PROM_ENTRIES  16
+#define DWR_LINK_RSSI_INVALID_DBM    (-128)
 
 struct dwr_eeprom_bbp_word {
 	u8 reg;

@@ -51,6 +51,7 @@ static struct ieee80211_supported_band dwr_band_2ghz = {
 static void dwr_leave_run_state(struct dwr_dev *dwr, const char *reason);
 static void dwr_enter_run_state(struct dwr_dev *dwr,
 				struct ieee80211_bss_conf *info);
+static void dwr_log_sta_rx_counters(struct dwr_dev *dwr, const char *reason);
 
 static int dwr_detect_endpoints(struct dwr_dev *dwr)
 {
@@ -118,6 +119,7 @@ static void dwr_link_tuner_workfn(struct work_struct *work)
 		container_of(to_delayed_work(work), struct dwr_dev, link_tuner_work);
 	u16 fcs_err = 0, plcp_err = 0, physical_err = 0, false_cca = 0;
 	s8 rssi;
+	bool have_rssi;
 	u8 low_bound, up_bound, next_vgc;
 
 	if (!READ_ONCE(dwr->usb.running))
@@ -130,7 +132,11 @@ static void dwr_link_tuner_workfn(struct work_struct *work)
 	(void)physical_err;
 
 	rssi = READ_ONCE(dwr->link_rssi_dbm);
-	if (rssi > -82) {
+	have_rssi = rssi != DWR_LINK_RSSI_INVALID_DBM;
+	if (!have_rssi) {
+		low_bound = 0x1c;
+		up_bound = 0x20;
+	} else if (rssi > -82) {
 		low_bound = 0x1c;
 		up_bound = 0x40;
 	} else if (rssi > -84) {
@@ -146,7 +152,7 @@ static void dwr_link_tuner_workfn(struct work_struct *work)
 	}
 
 	next_vgc = dwr->vgc_level;
-	if (dwr->associated) {
+	if (dwr->associated && have_rssi) {
 		if (rssi > -35)
 			next_vgc = 0x60;
 		else if (rssi >= -58)
@@ -204,8 +210,8 @@ static void dwr_mac_stop(struct ieee80211_hw *hw, bool suspend)
 	struct dwr_dev *dwr = hw_to_dwr(hw);
 
 	dwr_info(&dwr->usb.intf->dev, "mac80211 stop suspend=%d\n", suspend);
-	dwr_leave_run_state(dwr, "stop");
 	dwr->usb.running = false;
+	dwr_leave_run_state(dwr, "stop");
 	dwr_rx_stop(dwr);
 	dwr_rx_log_summary(dwr, "mac_stop");
 	dwr_log_sta_rx_counters(dwr, "mac_stop");
@@ -243,6 +249,9 @@ static void dwr_leave_run_state(struct dwr_dev *dwr, const char *reason)
 {
 	int ret;
 
+	dwr->associated = false;
+	dwr->aid = 0;
+	WRITE_ONCE(dwr->link_rssi_dbm, DWR_LINK_RSSI_INVALID_DBM);
 	cancel_delayed_work_sync(&dwr->link_tuner_work);
 	ret = dwr_abort_tsf_sync(dwr);
 	if (ret)
@@ -250,8 +259,6 @@ static void dwr_leave_run_state(struct dwr_dev *dwr, const char *reason)
 	ret = dwr_clear_bssid(dwr);
 	if (ret)
 		dwr_dbg(&dwr->usb.intf->dev, "clear bssid failed (%s): %d\n", reason, ret);
-	dwr->associated = false;
-	dwr->aid = 0;
 }
 
 static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *info)
@@ -291,8 +298,10 @@ static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *
 	ret = dwr_set_vgc(dwr, 0x20);
 	if (ret)
 		dwr_dbg(&dwr->usb.intf->dev, "run enter set vgc failed: %d\n", ret);
+	WRITE_ONCE(dwr->link_rssi_dbm, DWR_LINK_RSSI_INVALID_DBM);
 	cancel_delayed_work_sync(&dwr->link_tuner_work);
-	schedule_delayed_work(&dwr->link_tuner_work, msecs_to_jiffies(2000));
+	if (READ_ONCE(dwr->usb.running) && READ_ONCE(dwr->associated))
+		schedule_delayed_work(&dwr->link_tuner_work, msecs_to_jiffies(2000));
 
 	/* TODO(openbsd-rum-port): fake-join tx-rate initialization from if_rum.c has no direct mac80211 equivalent here. */
 }
@@ -457,6 +466,7 @@ static int dwr_usb_probe(struct usb_interface *intf,
 	INIT_WORK(&dwr->reset_work, dwr_reset_work);
 	INIT_DELAYED_WORK(&dwr->link_tuner_work, dwr_link_tuner_workfn);
 	dwr_rx_init_state(dwr);
+	dwr->link_rssi_dbm = DWR_LINK_RSSI_INVALID_DBM;
 
 	ret = dwr_detect_endpoints(dwr);
 	if (ret)
@@ -512,8 +522,8 @@ static void dwr_usb_disconnect(struct usb_interface *intf)
 		return;
 
 	usb_set_intfdata(intf, NULL);
-	dwr_leave_run_state(dwr, "disconnect");
 	dwr->usb.running = false;
+	dwr_leave_run_state(dwr, "disconnect");
 	dwr_rx_stop(dwr);
 	dwr_rx_log_summary(dwr, "disconnect");
 	dwr_log_sta_rx_counters(dwr, "disconnect");
