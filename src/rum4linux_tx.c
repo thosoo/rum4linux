@@ -19,6 +19,9 @@ struct dwr_tx_urb_ctx {
 	struct dwr_dev *dwr;
 	struct sk_buff *skb;
 	u8 *buf;
+	s8 rate_idx;
+	u8 rate_count;
+	bool no_ack;
 };
 
 #define DWR_TX_VALID BIT(1)
@@ -120,12 +123,30 @@ static void dwr_tx_complete(struct urb *urb)
 		return;
 
 	if (ctx->skb) {
+		if (urb->status == -ENOENT || urb->status == -ECONNRESET ||
+		    urb->status == -ESHUTDOWN) {
+			ieee80211_free_txskb(ctx->dwr->hw, ctx->skb);
+			goto out_free;
+		}
+
 		info = IEEE80211_SKB_CB(ctx->skb);
 		ieee80211_tx_info_clear_status(info);
-		/* TODO(openbsd-rum-port): map hardware TX success/ACK feedback once source-backed TX status path is implemented. */
+		info->status.rates[0].idx = ctx->rate_idx;
+		info->status.rates[0].count = max_t(u8, ctx->rate_count, 1);
+		info->status.rates[1].idx = -1;
+		if (ctx->no_ack)
+			info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
+		/*
+		 * OpenBSD rum(4) txeof() has only USB transfer completion and no
+		 * host-visible per-frame ACK/retry report. Linux rt73usb uses a
+		 * richer rt2x00 path that is not yet ported here.
+		 * TODO(openbsd-rum-port): add hardware-backed TX result ingestion
+		 * only when a confirmed RT2573 status source is wired in.
+		 */
 		ieee80211_tx_status_irqsafe(ctx->dwr->hw, ctx->skb);
 	}
 
+out_free:
 	kfree(ctx->buf);
 	kfree(ctx);
 }
@@ -134,6 +155,7 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 			bool *ownership_transferred)
 {
 	struct dwr_tx_desc_min desc;
+	const struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	struct dwr_tx_urb_ctx *ctx;
 	struct urb *urb;
 	u8 *buf;
@@ -172,6 +194,9 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 	ctx->dwr = dwr;
 	ctx->skb = skb;
 	ctx->buf = buf;
+	ctx->rate_idx = info->control.rates[0].idx;
+	ctx->rate_count = info->control.rates[0].count;
+	ctx->no_ack = !!(info->flags & IEEE80211_TX_CTL_NO_ACK);
 
 	usb_fill_bulk_urb(urb, dwr->usb.udev,
 			 usb_sndbulkpipe(dwr->usb.udev, dwr->usb.bulk_out_ep),

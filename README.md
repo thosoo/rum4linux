@@ -18,6 +18,14 @@ Implemented scaffold pieces:
 - bounded TX descriptor path with runtime bulk-OUT submission and URB-completion status handoff to mac80211
 - bounded RX bulk-IN URB pipeline with strict descriptor/frame sanity checks and conservative mac80211 delivery
 - minimal station-mode interface/BSSID runtime programming hooks, including BSSID clear on disassociation/teardown
+- source-backed station runtime register programming for MAC address, RX filter, basic rates, TSF sync, and ERP timing knobs
+- probe-time EEPROM MAC adoption for mac80211/hardware identity coherence (random fallback only on EEPROM failure)
+- RUN-state sequencing now mirrors OpenBSD rum(4) ordering for channel/slot/MRR/preamble/basic-rates/BSSID/TSF sync and aborts TSF sync on RUN exit
+- conservative TX retry-limit/fallback plumbing now programs confirmed TXRX_CSR4 fields; TX status still avoids claiming ACK success without hardware feedback
+- no confirmed host-visible RT2573 per-frame TX ACK/retry result ingestion path is wired yet; tx status remains transport-completion-limited
+- RX CCK rate decoding now follows source-backed raw 100kbps descriptor values (10/20/55/110) instead of low-bit masking
+- station RX filter parity tightened to rt73usb semantics (ACK/CTS follows FIF_CONTROL, control follows FIF_CONTROL|FIF_PSPOLL)
+- conservative BBP17/VGC tuner added for the narrow associated station path using source-backed RSSI/FCS/false-CCA inputs (false_cca > 512 raises gain, < 100 lowers gain within guarded bounds)
 
 Still intentionally incomplete:
 

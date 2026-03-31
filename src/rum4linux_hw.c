@@ -344,6 +344,42 @@ int dwr_set_channel(struct dwr_dev *dwr, struct ieee80211_channel *chan)
 	return dwr_rf_set_channel_2ghz(dwr, chan->hw_value);
 }
 
+int dwr_set_macaddr(struct dwr_dev *dwr, const u8 *addr)
+{
+	u32 low;
+	u32 high;
+	int ret;
+
+	if (!is_valid_ether_addr(addr))
+		return -EINVAL;
+
+	low = addr[0] | (addr[1] << 8) | (addr[2] << 16) | (addr[3] << 24);
+	high = addr[4] | (addr[5] << 8) | (0xff << 16);
+
+	ret = dwr_write_reg(dwr, DWR_MAC_CSR2, low);
+	if (ret)
+		return ret;
+	ret = dwr_write_reg(dwr, DWR_MAC_CSR3, high);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+int dwr_set_vgc(struct dwr_dev *dwr, u8 vgc_level)
+{
+	int ret;
+
+	if (dwr->vgc_level == vgc_level)
+		return 0;
+
+	ret = dwr_bbp_write(dwr, 17, vgc_level);
+	if (ret)
+		return ret;
+	dwr->vgc_level = vgc_level;
+	return 0;
+}
+
 int dwr_set_bssid(struct dwr_dev *dwr, const u8 *bssid)
 {
 	u32 low;
@@ -358,7 +394,7 @@ int dwr_set_bssid(struct dwr_dev *dwr, const u8 *bssid)
 	 * MAC_CSR4 gets bytes 0..3, MAC_CSR5 gets bytes 4..5 in low bits.
 	 */
 	low = bssid[0] | (bssid[1] << 8) | (bssid[2] << 16) | (bssid[3] << 24);
-	high = bssid[4] | (bssid[5] << 8);
+	high = bssid[4] | (bssid[5] << 8) | (DWR_BSSID_ONE_MODE << 16);
 
 	ret = dwr_write_reg(dwr, DWR_MAC_CSR4, low);
 	if (ret)
@@ -385,5 +421,235 @@ int dwr_clear_bssid(struct dwr_dev *dwr)
 
 	eth_zero_addr(dwr->bssid);
 	dwr->bssid_valid = false;
+	return 0;
+}
+
+int dwr_set_rx_filter(struct dwr_dev *dwr, unsigned int filter_flags)
+{
+	u32 reg;
+	int ret;
+
+	ret = dwr_read_reg(dwr, DWR_TXRX_CSR0, &reg);
+	if (ret)
+		return ret;
+
+	reg |= DWR_TXRX_CSR0_DROP_VER_ERROR;
+	if (filter_flags & FIF_FCSFAIL)
+		reg &= ~DWR_TXRX_CSR0_DROP_CRC_ERROR;
+	else
+		reg |= DWR_TXRX_CSR0_DROP_CRC_ERROR;
+	if (filter_flags & FIF_PLCPFAIL)
+		reg &= ~DWR_TXRX_CSR0_DROP_PHY_ERROR;
+	else
+		reg |= DWR_TXRX_CSR0_DROP_PHY_ERROR;
+	if (filter_flags & (FIF_CONTROL | FIF_PSPOLL))
+		reg &= ~DWR_TXRX_CSR0_DROP_CTL;
+	else
+		reg |= DWR_TXRX_CSR0_DROP_CTL;
+	if (filter_flags & FIF_CONTROL)
+		reg &= ~DWR_TXRX_CSR0_DROP_ACKCTS;
+	else
+		reg |= DWR_TXRX_CSR0_DROP_ACKCTS;
+	/* Station-only conservative policy: keep DROP_NOT_TO_ME and DROP_TODS separate as rt73usb does. */
+	if (filter_flags & FIF_OTHER_BSS)
+		reg &= ~DWR_TXRX_CSR0_DROP_NOT_TO_ME;
+	else
+		reg |= DWR_TXRX_CSR0_DROP_NOT_TO_ME;
+	if (filter_flags & FIF_OTHER_BSS)
+		reg &= ~DWR_TXRX_CSR0_DROP_TODS;
+	else
+		reg |= DWR_TXRX_CSR0_DROP_TODS;
+	if (filter_flags & FIF_ALLMULTI)
+		reg &= ~DWR_TXRX_CSR0_DROP_MULTICAST;
+	else
+		reg |= DWR_TXRX_CSR0_DROP_MULTICAST;
+
+	reg &= ~DWR_TXRX_CSR0_DROP_BROADCAST;
+
+	ret = dwr_write_reg(dwr, DWR_TXRX_CSR0, reg);
+	if (!ret)
+		dwr->filter_flags = filter_flags;
+	return ret;
+}
+
+int dwr_set_basic_rates(struct dwr_dev *dwr, u32 basic_rates)
+{
+	/* TODO(openbsd-rum-port): verify full rate-mask mapping across bands; station path is 2.4GHz only for now. */
+	return dwr_write_reg(dwr, DWR_TXRX_CSR5, basic_rates & 0xfff);
+}
+
+int dwr_set_tsf_sync(struct dwr_dev *dwr, bool enable, u16 beacon_int)
+{
+	u32 reg;
+	int ret;
+
+	ret = dwr_read_reg(dwr, DWR_TXRX_CSR9, &reg);
+	if (ret)
+		return ret;
+
+	reg &= ~(DWR_TXRX_CSR9_BEACON_INTERVAL_MASK |
+		 DWR_TXRX_CSR9_TSF_TICKING |
+		 DWR_TXRX_CSR9_TSF_MODE_MASK |
+		 DWR_TXRX_CSR9_ENABLE_TBTT |
+		 DWR_TXRX_CSR9_GENERATE_BEACON);
+	reg |= ((u32)beacon_int * 16) & DWR_TXRX_CSR9_BEACON_INTERVAL_MASK;
+
+	if (enable) {
+		reg |= DWR_TXRX_CSR9_TSF_TICKING | DWR_TXRX_CSR9_ENABLE_TBTT;
+		reg &= ~DWR_TXRX_CSR9_TSF_MODE_MASK;
+		reg |= FIELD_PREP(DWR_TXRX_CSR9_TSF_MODE_MASK, 1);
+		reg &= ~DWR_TXRX_CSR9_GENERATE_BEACON;
+	} else {
+		reg &= ~(DWR_TXRX_CSR9_TSF_TICKING | DWR_TXRX_CSR9_ENABLE_TBTT |
+			 DWR_TXRX_CSR9_TSF_MODE_MASK | DWR_TXRX_CSR9_GENERATE_BEACON);
+	}
+
+	return dwr_write_reg(dwr, DWR_TXRX_CSR9, reg);
+}
+
+int dwr_abort_tsf_sync(struct dwr_dev *dwr)
+{
+	u32 reg;
+	int ret;
+
+	ret = dwr_read_reg(dwr, DWR_TXRX_CSR9, &reg);
+	if (ret)
+		return ret;
+
+	/* OpenBSD rum_task(): abort TSF synchronization by clearing low 24 bits. */
+	reg &= ~0x00ffffff;
+	return dwr_write_reg(dwr, DWR_TXRX_CSR9, reg);
+}
+
+int dwr_set_mrr(struct dwr_dev *dwr, bool enable, bool cck_fallback)
+{
+	u32 reg;
+	int ret;
+
+	ret = dwr_read_reg(dwr, DWR_TXRX_CSR4, &reg);
+	if (ret)
+		return ret;
+
+	if (enable)
+		reg |= DWR_TXRX_CSR4_MRR_ENABLE;
+	else
+		reg &= ~DWR_TXRX_CSR4_MRR_ENABLE;
+	if (cck_fallback)
+		reg |= DWR_TXRX_CSR4_MRR_CCK_FALLBACK;
+	else
+		reg &= ~DWR_TXRX_CSR4_MRR_CCK_FALLBACK;
+
+	return dwr_write_reg(dwr, DWR_TXRX_CSR4, reg);
+}
+
+int dwr_set_retry_limits(struct dwr_dev *dwr, u8 short_retry, u8 long_retry,
+			bool ofdm_rate_down, u8 ofdm_rate_step,
+			bool ofdm_fallback_cck)
+{
+	u32 reg;
+	int ret;
+
+	ret = dwr_read_reg(dwr, DWR_TXRX_CSR4, &reg);
+	if (ret)
+		return ret;
+
+	if (ofdm_rate_down)
+		reg |= DWR_TXRX_CSR4_OFDM_TX_RATE_DOWN;
+	else
+		reg &= ~DWR_TXRX_CSR4_OFDM_TX_RATE_DOWN;
+	reg &= ~DWR_TXRX_CSR4_OFDM_TX_RATE_STEP_MASK;
+	reg |= FIELD_PREP(DWR_TXRX_CSR4_OFDM_TX_RATE_STEP_MASK,
+			  ofdm_rate_step & 0x3);
+	if (ofdm_fallback_cck)
+		reg |= DWR_TXRX_CSR4_OFDM_TX_FALLBACK_CCK;
+	else
+		reg &= ~DWR_TXRX_CSR4_OFDM_TX_FALLBACK_CCK;
+	reg &= ~(DWR_TXRX_CSR4_LONG_RETRY_LIMIT_MASK |
+		 DWR_TXRX_CSR4_SHORT_RETRY_LIMIT_MASK);
+	reg |= FIELD_PREP(DWR_TXRX_CSR4_LONG_RETRY_LIMIT_MASK,
+			  long_retry & 0xf);
+	reg |= FIELD_PREP(DWR_TXRX_CSR4_SHORT_RETRY_LIMIT_MASK,
+			  short_retry & 0xf);
+
+	return dwr_write_reg(dwr, DWR_TXRX_CSR4, reg);
+}
+
+int dwr_set_erp_timing(struct dwr_dev *dwr, bool short_preamble,
+		      u8 slot_time, u8 sifs, u16 eifs)
+{
+	u32 reg4, mac8, mac9;
+	int ret;
+
+	ret = dwr_read_reg(dwr, DWR_TXRX_CSR4, &reg4);
+	if (ret)
+		return ret;
+	if (short_preamble)
+		reg4 |= DWR_TXRX_CSR4_SHORT_PREAMBLE;
+	else
+		reg4 &= ~DWR_TXRX_CSR4_SHORT_PREAMBLE;
+	reg4 |= DWR_TXRX_CSR4_AUTORESPOND_ENABLE;
+	ret = dwr_write_reg(dwr, DWR_TXRX_CSR4, reg4);
+	if (ret)
+		return ret;
+
+	ret = dwr_read_reg(dwr, DWR_MAC_CSR9, &mac9);
+	if (ret)
+		return ret;
+	mac9 &= ~DWR_MAC_CSR9_SLOT_TIME_MASK;
+	mac9 |= FIELD_PREP(DWR_MAC_CSR9_SLOT_TIME_MASK, slot_time);
+	ret = dwr_write_reg(dwr, DWR_MAC_CSR9, mac9);
+	if (ret)
+		return ret;
+
+	ret = dwr_read_reg(dwr, DWR_MAC_CSR8, &mac8);
+	if (ret)
+		return ret;
+	mac8 &= ~(DWR_MAC_CSR8_SIFS_MASK |
+		  DWR_MAC_CSR8_SIFS_AFTER_RX_OFDM_MASK |
+		  DWR_MAC_CSR8_EIFS_MASK);
+	mac8 |= FIELD_PREP(DWR_MAC_CSR8_SIFS_MASK, sifs);
+	mac8 |= FIELD_PREP(DWR_MAC_CSR8_SIFS_AFTER_RX_OFDM_MASK, 3);
+	mac8 |= FIELD_PREP(DWR_MAC_CSR8_EIFS_MASK, eifs);
+	return dwr_write_reg(dwr, DWR_MAC_CSR8, mac8);
+}
+
+int dwr_set_rx_timing_defaults(struct dwr_dev *dwr)
+{
+	u32 reg;
+	int ret;
+
+	ret = dwr_read_reg(dwr, DWR_TXRX_CSR0, &reg);
+	if (ret)
+		return ret;
+
+	reg &= ~(DWR_TXRX_CSR0_RX_ACK_TIMEOUT_MASK | DWR_TXRX_CSR0_TSF_OFFSET_MASK);
+	reg |= FIELD_PREP(DWR_TXRX_CSR0_RX_ACK_TIMEOUT_MASK, 0x32);
+	reg |= FIELD_PREP(DWR_TXRX_CSR0_TSF_OFFSET_MASK, 24);
+	return dwr_write_reg(dwr, DWR_TXRX_CSR0, reg);
+}
+
+int dwr_read_rx_error_counters(struct dwr_dev *dwr, u16 *fcs_err,
+			       u16 *plcp_err, u16 *physical_err,
+			       u16 *false_cca)
+{
+	u32 sta0, sta1;
+	int ret;
+
+	ret = dwr_read_reg(dwr, DWR_STA_CSR0, &sta0);
+	if (ret)
+		return ret;
+	ret = dwr_read_reg(dwr, DWR_STA_CSR1, &sta1);
+	if (ret)
+		return ret;
+
+	if (fcs_err)
+		*fcs_err = FIELD_GET(DWR_STA_CSR0_FCS_ERROR_MASK, sta0);
+	if (plcp_err)
+		*plcp_err = FIELD_GET(DWR_STA_CSR0_PLCP_ERROR_MASK, sta0);
+	if (physical_err)
+		*physical_err = FIELD_GET(DWR_STA_CSR1_PHYSICAL_ERROR_MASK, sta1);
+	if (false_cca)
+		*false_cca = FIELD_GET(DWR_STA_CSR1_FALSE_CCA_MASK, sta1);
+
 	return 0;
 }

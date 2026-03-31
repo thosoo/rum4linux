@@ -27,14 +27,14 @@ static void dwr_rx_complete(struct urb *urb);
 static int dwr_rx_rate_idx(bool ofdm, u8 signal)
 {
 	if (!ofdm) {
-		switch (signal & 0x3) {
-		case 0:
+		switch (signal) {
+		case 10:
 			return 0;  /* 1 Mbps */
-		case 1:
+		case 20:
 			return 1;  /* 2 Mbps */
-		case 2:
+		case 55:
 			return 2;  /* 5.5 Mbps */
-		case 3:
+		case 110:
 			return 3;  /* 11 Mbps */
 		default:
 			return -EINVAL;
@@ -163,6 +163,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	memset(status, 0, sizeof(*status));
 	status->band = NL80211_BAND_2GHZ;
 	status->signal = rssi + dwr->eeprom.rssi_2ghz_corr;
+	WRITE_ONCE(dwr->link_rssi_dbm, status->signal);
 	status->rate_idx = rate_idx;
 	status->freq = ieee80211_channel_to_frequency(dwr->hw_state.current_channel,
 						      NL80211_BAND_2GHZ);

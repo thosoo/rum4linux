@@ -4,6 +4,7 @@
 
 #include <linux/usb.h>
 #include <linux/mutex.h>
+#include <linux/bitfield.h>
 #include <net/mac80211.h>
 #include "rum4linux_rx.h"
 
@@ -23,8 +24,11 @@
 #define DWR_MCU_CODE_BASE      0x0800
 #define DWR_MAC_CSR0           0x3000
 #define DWR_MAC_CSR1           0x3004
+#define DWR_MAC_CSR2           0x3008
+#define DWR_MAC_CSR3           0x300c
 #define DWR_MAC_CSR4           0x3010
 #define DWR_MAC_CSR5           0x3014
+#define DWR_MAC_CSR8           0x3020
 #define DWR_MAC_CSR9           0x3024
 #define DWR_MAC_CSR10          0x3028
 #define DWR_MAC_CSR12          0x3030
@@ -32,6 +36,12 @@
 #define DWR_TXRX_CSR1          0x3044
 #define DWR_TXRX_CSR2          0x3048
 #define DWR_TXRX_CSR3          0x304c
+#define DWR_TXRX_CSR4          0x3050
+#define DWR_TXRX_CSR5          0x3054
+#define DWR_TXRX_CSR9          0x3064
+#define DWR_TXRX_CSR10         0x3068
+#define DWR_STA_CSR0           0x30c0
+#define DWR_STA_CSR1           0x30c4
 #define DWR_PHY_CSR0           0x3080
 #define DWR_PHY_CSR3           0x308c
 #define DWR_PHY_CSR4           0x3090
@@ -48,6 +58,41 @@
 #define DWR_BBP_BUSY           BIT(16)
 #define DWR_RF_20BIT           (20U << 24)
 #define DWR_RF_BUSY            BIT(31)
+#define DWR_TXRX_CSR0_RX_ACK_TIMEOUT_MASK GENMASK(8, 0)
+#define DWR_TXRX_CSR0_TSF_OFFSET_MASK GENMASK(14, 9)
+#define DWR_TXRX_CSR0_DROP_CRC_ERROR BIT(17)
+#define DWR_TXRX_CSR0_DROP_PHY_ERROR BIT(18)
+#define DWR_TXRX_CSR0_DROP_CTL BIT(19)
+#define DWR_TXRX_CSR0_DROP_NOT_TO_ME BIT(20)
+#define DWR_TXRX_CSR0_DROP_TODS BIT(21)
+#define DWR_TXRX_CSR0_DROP_VER_ERROR BIT(22)
+#define DWR_TXRX_CSR0_DROP_MULTICAST BIT(23)
+#define DWR_TXRX_CSR0_DROP_BROADCAST BIT(24)
+#define DWR_TXRX_CSR0_DROP_ACKCTS BIT(25)
+#define DWR_TXRX_CSR4_AUTORESPOND_ENABLE BIT(17)
+#define DWR_TXRX_CSR4_SHORT_PREAMBLE BIT(18)
+#define DWR_TXRX_CSR4_MRR_ENABLE BIT(19)
+#define DWR_TXRX_CSR4_OFDM_TX_RATE_DOWN DWR_TXRX_CSR4_MRR_ENABLE
+#define DWR_TXRX_CSR4_OFDM_TX_RATE_STEP_MASK GENMASK(21, 20)
+#define DWR_TXRX_CSR4_MRR_CCK_FALLBACK BIT(22)
+#define DWR_TXRX_CSR4_OFDM_TX_FALLBACK_CCK DWR_TXRX_CSR4_MRR_CCK_FALLBACK
+#define DWR_TXRX_CSR4_LONG_RETRY_LIMIT_MASK GENMASK(27, 24)
+#define DWR_TXRX_CSR4_SHORT_RETRY_LIMIT_MASK GENMASK(31, 28)
+#define DWR_TXRX_CSR9_BEACON_INTERVAL_MASK GENMASK(15, 0)
+#define DWR_TXRX_CSR9_TSF_TICKING BIT(16)
+#define DWR_TXRX_CSR9_TSF_MODE_MASK GENMASK(18, 17)
+#define DWR_TXRX_CSR9_ENABLE_TBTT BIT(19)
+#define DWR_TXRX_CSR9_GENERATE_BEACON BIT(20)
+#define DWR_TXRX_CSR9_TIMESTAMP_COMP_MASK GENMASK(31, 24)
+#define DWR_MAC_CSR8_SIFS_MASK GENMASK(7, 0)
+#define DWR_MAC_CSR8_SIFS_AFTER_RX_OFDM_MASK GENMASK(15, 8)
+#define DWR_MAC_CSR8_EIFS_MASK GENMASK(31, 16)
+#define DWR_MAC_CSR9_SLOT_TIME_MASK GENMASK(7, 0)
+#define DWR_BSSID_ONE_MODE 3
+#define DWR_STA_CSR0_FCS_ERROR_MASK GENMASK(15, 0)
+#define DWR_STA_CSR0_PLCP_ERROR_MASK GENMASK(31, 16)
+#define DWR_STA_CSR1_PHYSICAL_ERROR_MASK GENMASK(15, 0)
+#define DWR_STA_CSR1_FALSE_CCA_MASK GENMASK(31, 16)
 
 #define DWR_RF_5226            1
 #define DWR_RF_2528            2
@@ -62,6 +107,7 @@
 #define DWR_EEPROM_RAW_CACHE_LEN     256
 #define DWR_EEPROM_TXPOWER_CHANS_2G  14
 #define DWR_EEPROM_BBP_PROM_ENTRIES  16
+#define DWR_LINK_RSSI_INVALID_DBM    (-128)
 
 struct dwr_eeprom_bbp_word {
 	u8 reg;
@@ -128,12 +174,17 @@ struct dwr_dev {
 	struct dwr_usb_state usb;
 	spinlock_t tx_lock;
 	struct work_struct reset_work;
+	struct delayed_work link_tuner_work;
 	struct dwr_rx_state rx;
 	u8 mac_addr[ETH_ALEN];
 	u8 bssid[ETH_ALEN];
 	bool bssid_valid;
 	bool associated;
+	u16 aid;
+	s8 link_rssi_dbm;
+	u8 vgc_level;
 	struct ieee80211_vif *vif_sta;
+	unsigned int filter_flags;
 	bool registered_hw;
 
 	struct dwr_eeprom_info eeprom;
@@ -155,7 +206,23 @@ int dwr_read_eeprom(struct dwr_dev *dwr, u16 off, void *buf, size_t len);
 int dwr_hw_init(struct dwr_dev *dwr);
 void dwr_hw_stop(struct dwr_dev *dwr);
 int dwr_set_channel(struct dwr_dev *dwr, struct ieee80211_channel *chan);
+int dwr_set_macaddr(struct dwr_dev *dwr, const u8 *addr);
+int dwr_set_vgc(struct dwr_dev *dwr, u8 vgc_level);
 int dwr_set_bssid(struct dwr_dev *dwr, const u8 *bssid);
 int dwr_clear_bssid(struct dwr_dev *dwr);
+int dwr_set_rx_filter(struct dwr_dev *dwr, unsigned int filter_flags);
+int dwr_set_basic_rates(struct dwr_dev *dwr, u32 basic_rates);
+int dwr_set_tsf_sync(struct dwr_dev *dwr, bool enable, u16 beacon_int);
+int dwr_abort_tsf_sync(struct dwr_dev *dwr);
+int dwr_set_mrr(struct dwr_dev *dwr, bool enable, bool cck_fallback);
+int dwr_set_retry_limits(struct dwr_dev *dwr, u8 short_retry, u8 long_retry,
+			bool ofdm_rate_down, u8 ofdm_rate_step,
+			bool ofdm_fallback_cck);
+int dwr_set_erp_timing(struct dwr_dev *dwr, bool short_preamble,
+		      u8 slot_time, u8 sifs, u16 eifs);
+int dwr_set_rx_timing_defaults(struct dwr_dev *dwr);
+int dwr_read_rx_error_counters(struct dwr_dev *dwr, u16 *fcs_err,
+			       u16 *plcp_err, u16 *physical_err,
+			       u16 *false_cca);
 
 #endif
