@@ -118,6 +118,13 @@
 #define DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_PROFILE  5
 #define DWR_CHAN_APPLY_STAGE_RECOVERY_RF_SET       6
 #define DWR_CHAN_APPLY_STAGE_RECOVERY_POST_SANITY  7
+#define DWR_CHAN_APPLY_ERRCLASS_NONE               0
+#define DWR_CHAN_APPLY_ERRCLASS_INVALID            1
+#define DWR_CHAN_APPLY_ERRCLASS_UNSUPPORTED        2
+#define DWR_CHAN_APPLY_ERRCLASS_TIMEOUT            3
+#define DWR_CHAN_APPLY_ERRCLASS_IO                 4
+#define DWR_CHAN_APPLY_ERRCLASS_SANITY             5
+#define DWR_CHAN_APPLY_ERRCLASS_UNKNOWN            6
 
 struct dwr_eeprom_bbp_word {
 	u8 reg;
@@ -169,9 +176,16 @@ struct dwr_hw_state {
 	u32 channel_recovery_attempt_count;
 	u32 channel_recovery_success_count;
 	u32 channel_recovery_failure_count;
+	u32 channel_apply_errclass_invalid_count;
+	u32 channel_apply_errclass_unsupported_count;
+	u32 channel_apply_errclass_timeout_count;
+	u32 channel_apply_errclass_io_count;
+	u32 channel_apply_errclass_sanity_count;
+	u32 channel_apply_errclass_unknown_count;
 	bool last_channel_apply_was_runtime;
 	u8 last_channel_apply_stage;
 	u8 last_channel_apply_channel;
+	u8 last_channel_apply_errclass;
 	int last_channel_apply_err;
 };
 

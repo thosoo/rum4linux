@@ -236,6 +236,76 @@ static const char *dwr_channel_apply_stage_name(u8 stage)
 	}
 }
 
+static u8 dwr_classify_channel_apply_error(u8 stage, int err)
+{
+	if (!err)
+		return DWR_CHAN_APPLY_ERRCLASS_NONE;
+	if (err == -EINVAL)
+		return DWR_CHAN_APPLY_ERRCLASS_INVALID;
+	if (err == -EOPNOTSUPP)
+		return DWR_CHAN_APPLY_ERRCLASS_UNSUPPORTED;
+	if (err == -ETIMEDOUT)
+		return DWR_CHAN_APPLY_ERRCLASS_TIMEOUT;
+	if (err == -EIO &&
+	    (stage == DWR_CHAN_APPLY_STAGE_POST_SANITY ||
+	     stage == DWR_CHAN_APPLY_STAGE_RECOVERY_POST_SANITY))
+		return DWR_CHAN_APPLY_ERRCLASS_SANITY;
+	if (err < 0)
+		return DWR_CHAN_APPLY_ERRCLASS_IO;
+	return DWR_CHAN_APPLY_ERRCLASS_UNKNOWN;
+}
+
+static const char *dwr_channel_apply_errclass_name(u8 errclass)
+{
+	switch (errclass) {
+	case DWR_CHAN_APPLY_ERRCLASS_NONE:
+		return "none";
+	case DWR_CHAN_APPLY_ERRCLASS_INVALID:
+		return "invalid";
+	case DWR_CHAN_APPLY_ERRCLASS_UNSUPPORTED:
+		return "unsupported";
+	case DWR_CHAN_APPLY_ERRCLASS_TIMEOUT:
+		return "timeout";
+	case DWR_CHAN_APPLY_ERRCLASS_IO:
+		return "io";
+	case DWR_CHAN_APPLY_ERRCLASS_SANITY:
+		return "sanity";
+	default:
+		return "unknown";
+	}
+}
+
+static void dwr_record_channel_apply_error(struct dwr_dev *dwr, int err)
+{
+	u8 errclass = dwr_classify_channel_apply_error(dwr->hw_state.last_channel_apply_stage,
+						       err);
+
+	dwr->hw_state.last_channel_apply_err = err;
+	dwr->hw_state.last_channel_apply_errclass = errclass;
+	switch (errclass) {
+	case DWR_CHAN_APPLY_ERRCLASS_INVALID:
+		dwr->hw_state.channel_apply_errclass_invalid_count++;
+		break;
+	case DWR_CHAN_APPLY_ERRCLASS_UNSUPPORTED:
+		dwr->hw_state.channel_apply_errclass_unsupported_count++;
+		break;
+	case DWR_CHAN_APPLY_ERRCLASS_TIMEOUT:
+		dwr->hw_state.channel_apply_errclass_timeout_count++;
+		break;
+	case DWR_CHAN_APPLY_ERRCLASS_IO:
+		dwr->hw_state.channel_apply_errclass_io_count++;
+		break;
+	case DWR_CHAN_APPLY_ERRCLASS_SANITY:
+		dwr->hw_state.channel_apply_errclass_sanity_count++;
+		break;
+	case DWR_CHAN_APPLY_ERRCLASS_UNKNOWN:
+		dwr->hw_state.channel_apply_errclass_unknown_count++;
+		break;
+	default:
+		break;
+	}
+}
+
 static int dwr_recover_channel_2ghz_once(struct dwr_dev *dwr, u8 chan,
 					 bool runtime, const char *reason)
 {
@@ -253,21 +323,21 @@ static int dwr_recover_channel_2ghz_once(struct dwr_dev *dwr, u8 chan,
 	ret = dwr_bbp_init(dwr);
 	if (ret) {
 		dwr->hw_state.channel_recovery_failure_count++;
-		dwr->hw_state.last_channel_apply_err = ret;
+		dwr_record_channel_apply_error(dwr, ret);
 		return ret;
 	}
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_PROFILE;
 	ret = dwr_apply_2ghz_bbp_profile(dwr);
 	if (ret) {
 		dwr->hw_state.channel_recovery_failure_count++;
-		dwr->hw_state.last_channel_apply_err = ret;
+		dwr_record_channel_apply_error(dwr, ret);
 		return ret;
 	}
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_RF_SET;
 	ret = dwr_rf_set_channel_2ghz(dwr, chan);
 	if (ret) {
 		dwr->hw_state.channel_recovery_failure_count++;
-		dwr->hw_state.last_channel_apply_err = ret;
+		dwr_record_channel_apply_error(dwr, ret);
 		return ret;
 	}
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_RECOVERY_POST_SANITY;
@@ -276,10 +346,11 @@ static int dwr_recover_channel_2ghz_once(struct dwr_dev *dwr, u8 chan,
 		dwr->hw_state.recovery_succeeded = true;
 		dwr->hw_state.channel_recovery_success_count++;
 		dwr->hw_state.last_channel_apply_err = 0;
+		dwr->hw_state.last_channel_apply_errclass = DWR_CHAN_APPLY_ERRCLASS_NONE;
 	}
 	if (ret) {
 		dwr->hw_state.channel_recovery_failure_count++;
-		dwr->hw_state.last_channel_apply_err = ret;
+		dwr_record_channel_apply_error(dwr, ret);
 	}
 	return ret;
 }
@@ -298,6 +369,7 @@ static int dwr_apply_2ghz_rt2528_channel(struct dwr_dev *dwr, u8 chan,
 	dwr->hw_state.last_channel_apply_channel = chan;
 	dwr->hw_state.last_channel_apply_stage = DWR_CHAN_APPLY_STAGE_BBP_PROFILE;
 	dwr->hw_state.last_channel_apply_err = 0;
+	dwr->hw_state.last_channel_apply_errclass = DWR_CHAN_APPLY_ERRCLASS_NONE;
 
 	ret = dwr_apply_2ghz_bbp_profile(dwr);
 	if (ret)
@@ -318,23 +390,25 @@ static int dwr_apply_2ghz_rt2528_channel(struct dwr_dev *dwr, u8 chan,
 
 fail_before_recovery:
 	dwr->hw_state.channel_apply_failure_count++;
-	dwr->hw_state.last_channel_apply_err = ret;
+	dwr_record_channel_apply_error(dwr, ret);
 	dwr_warn(&dwr->usb.intf->dev,
-		 "channel apply (%s) first-pass failure chan=%u stage=%s err=%d; recovery=1\n",
+		 "channel apply (%s) first-pass failure chan=%u stage=%s err=%d class=%s; recovery=1\n",
 		 reason, chan,
 		 dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage),
-		 ret);
+		 ret,
+		 dwr_channel_apply_errclass_name(dwr->hw_state.last_channel_apply_errclass));
 
 	ret = dwr_recover_channel_2ghz_once(dwr, chan, runtime, reason);
 	if (ret)
 		dwr_err(&dwr->usb.intf->dev,
-			"channel apply (%s) failed after bounded recovery chan=%u stage=%s err=%d\n",
+			"channel apply (%s) failed after bounded recovery chan=%u stage=%s err=%d class=%s\n",
 			reason, chan,
 			dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage),
-		 ret);
+		 ret,
+		 dwr_channel_apply_errclass_name(dwr->hw_state.last_channel_apply_errclass));
 	else
 		dwr_info(&dwr->usb.intf->dev,
-			 "channel apply (%s) recovered chan=%u stage=%s\n",
+			 "channel apply (%s) recovered chan=%u stage=%s rec_attempt=1 rec_ok=1\n",
 			 reason, chan,
 			 dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage));
 
@@ -344,7 +418,7 @@ fail_before_recovery:
 void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason)
 {
 	dwr_info(&dwr->usb.intf->dev,
-		 "channel apply summary (%s): init=%u runtime=%u first_pass_ok=%u first_pass_fail=%u rec_attempt=%u rec_ok=%u rec_fail=%u last_runtime=%u last_chan=%u last_stage=%s last_err=%d\n",
+		 "channel apply summary (%s): init=%u runtime=%u first_pass_ok=%u first_pass_fail=%u rec_attempt=%u rec_ok=%u rec_fail=%u class_invalid=%u class_unsupported=%u class_timeout=%u class_io=%u class_sanity=%u class_unknown=%u last_runtime=%u last_chan=%u last_stage=%s last_err=%d last_class=%s\n",
 		 reason,
 		 dwr->hw_state.init_channel_apply_count,
 		 dwr->hw_state.runtime_channel_apply_count,
@@ -353,10 +427,17 @@ void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason)
 		 dwr->hw_state.channel_recovery_attempt_count,
 		 dwr->hw_state.channel_recovery_success_count,
 		 dwr->hw_state.channel_recovery_failure_count,
+		 dwr->hw_state.channel_apply_errclass_invalid_count,
+		 dwr->hw_state.channel_apply_errclass_unsupported_count,
+		 dwr->hw_state.channel_apply_errclass_timeout_count,
+		 dwr->hw_state.channel_apply_errclass_io_count,
+		 dwr->hw_state.channel_apply_errclass_sanity_count,
+		 dwr->hw_state.channel_apply_errclass_unknown_count,
 		 dwr->hw_state.last_channel_apply_was_runtime,
 		 dwr->hw_state.last_channel_apply_channel,
 		 dwr_channel_apply_stage_name(dwr->hw_state.last_channel_apply_stage),
-		 dwr->hw_state.last_channel_apply_err);
+		 dwr->hw_state.last_channel_apply_err,
+		 dwr_channel_apply_errclass_name(dwr->hw_state.last_channel_apply_errclass));
 }
 
 static void dwr_log_init_summary(struct dwr_dev *dwr)

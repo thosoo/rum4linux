@@ -23,6 +23,7 @@ Implemented scaffold pieces:
 - truthful current TX rate surface: only 2.4GHz CCK (1/2/5.5/11 Mbps) is advertised/operational for the narrow descriptor path; OFDM TX remains deferred
 - initial and runtime 2.4GHz channel applies now share one bounded sequence (BBP profile -> RF set -> post-channel sanity -> one bounded recovery attempt)
 - channel-apply observability counters/stage tracking now record init vs runtime applies, first-pass failures, bounded recovery outcomes, and last stage/channel/error
+- channel-apply diagnostics now include conservative error-class buckets (invalid/unsupported/timeout/io/sanity/unknown) derived from stage+errno for faster field triage
 - probe-time EEPROM MAC adoption for mac80211/hardware identity coherence (random fallback only on EEPROM failure)
 - RUN-state sequencing now mirrors OpenBSD rum(4) ordering for channel/slot/MRR/preamble/basic-rates/BSSID/TSF sync and aborts TSF sync on RUN exit
 - conservative TX retry-limit/fallback plumbing now programs confirmed TXRX_CSR4 fields; TX status still avoids claiming ACK success without hardware feedback
