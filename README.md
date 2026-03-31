@@ -15,12 +15,14 @@ Implemented scaffold pieces:
 - BBP init scaffold with OpenBSD-derived defaults plus EEPROM BBP overrides
 - RF/channel scaffold for RT2528 2.4GHz channel programming with bounded calibration wiring
 - bounded post-channel sanity check and one bounded recovery attempt
-- bounded TX descriptor-construction scaffolding with runtime TX submission intentionally blocked
+- bounded TX descriptor path with runtime bulk-OUT submission and URB-completion status handoff to mac80211
+- bounded RX bulk-IN URB pipeline with strict descriptor/frame sanity checks and conservative mac80211 delivery
+- minimal station-mode interface/BSSID runtime programming hooks, including BSSID clear on disassociation/teardown
 
 Still intentionally incomplete:
 
-- full, validated TX descriptor semantics across `rum(4)`-family variants
-- RX datapath and descriptor parsing
+- full, validated TX descriptor/status semantics across `rum(4)`-family variants
+- full RX descriptor confidence across all rum(4)-family variants
 - association / operational station behavior
 - broad USB ID and per-device calibration/firmware coverage
 
@@ -49,5 +51,6 @@ All uncertain behavior remains tagged as `TODO(openbsd-rum-port)`.
 - `src/rum4linux_bbp.c` / `src/rum4linux_bbp.h` — BBP subsystem
 - `src/rum4linux_rf.c` / `src/rum4linux_rf.h` — RF/channel subsystem
 - `src/rum4linux_tx.c` / `src/rum4linux_tx.h` — bounded TX subsystem
+- `src/rum4linux_rx.c` / `src/rum4linux_rx.h` — bounded conservative RX subsystem
 - `src/rum4linux_debug.h` — logging helpers
 - `docs/openbsd-rum-port-notes.md` — reference and limitation notes

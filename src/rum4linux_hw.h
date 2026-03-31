@@ -5,6 +5,7 @@
 #include <linux/usb.h>
 #include <linux/mutex.h>
 #include <net/mac80211.h>
+#include "rum4linux_rx.h"
 
 #define DWR_USB_VID 0x07d1
 #define DWR_USB_PID 0x3c06
@@ -22,6 +23,8 @@
 #define DWR_MCU_CODE_BASE      0x0800
 #define DWR_MAC_CSR0           0x3000
 #define DWR_MAC_CSR1           0x3004
+#define DWR_MAC_CSR4           0x3010
+#define DWR_MAC_CSR5           0x3014
 #define DWR_MAC_CSR9           0x3024
 #define DWR_MAC_CSR10          0x3028
 #define DWR_MAC_CSR12          0x3030
@@ -110,6 +113,7 @@ struct dwr_usb_state {
 	struct usb_interface *intf;
 	struct mutex io_mutex;
 	bool running;
+	struct usb_anchor tx_anchor;
 
 	u8 bulk_in_ep;
 	u8 bulk_out_ep;
@@ -123,9 +127,13 @@ struct dwr_dev {
 	struct ieee80211_hw *hw;
 	struct dwr_usb_state usb;
 	spinlock_t tx_lock;
-	struct work_struct rx_work;
 	struct work_struct reset_work;
+	struct dwr_rx_state rx;
 	u8 mac_addr[ETH_ALEN];
+	u8 bssid[ETH_ALEN];
+	bool bssid_valid;
+	bool associated;
+	struct ieee80211_vif *vif_sta;
 	bool registered_hw;
 
 	struct dwr_eeprom_info eeprom;
@@ -147,5 +155,7 @@ int dwr_read_eeprom(struct dwr_dev *dwr, u16 off, void *buf, size_t len);
 int dwr_hw_init(struct dwr_dev *dwr);
 void dwr_hw_stop(struct dwr_dev *dwr);
 int dwr_set_channel(struct dwr_dev *dwr, struct ieee80211_channel *chan);
+int dwr_set_bssid(struct dwr_dev *dwr, const u8 *bssid);
+int dwr_clear_bssid(struct dwr_dev *dwr);
 
 #endif
