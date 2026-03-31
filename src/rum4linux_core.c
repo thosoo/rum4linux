@@ -8,6 +8,7 @@
 #include "rum4linux_hw.h"
 #include "rum4linux_debug.h"
 #include "rum4linux_tx.h"
+#include "rum4linux_rx.h"
 
 static bool bind;
 module_param(bind, bool, 0644);
@@ -101,11 +102,6 @@ static int dwr_detect_endpoints(struct dwr_dev *dwr)
 	return 0;
 }
 
-static void dwr_rx_work(struct work_struct *work)
-{
-	/* TODO(openbsd-rum-port): parse RX descriptors and call ieee80211_rx_irqsafe(). */
-}
-
 static void dwr_reset_work(struct work_struct *work)
 {
 	/* TODO(openbsd-rum-port): device reset/reinit path after USB or MCU fault. */
@@ -122,17 +118,30 @@ static int dwr_mac_start(struct ieee80211_hw *hw)
 		return ret;
 
 	dwr->usb.running = true;
+	ret = dwr_rx_start(dwr);
+	if (ret) {
+		dwr->usb.running = false;
+		dwr_hw_stop(dwr);
+		return ret;
+	}
 	return 0;
 }
 
 static void dwr_mac_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct dwr_dev *dwr = hw_to_dwr(hw);
+	int ret;
 
 	dwr_info(&dwr->usb.intf->dev, "mac80211 stop suspend=%d\n", suspend);
+	ret = dwr_clear_bssid(dwr);
+	if (ret)
+		dwr_dbg(&dwr->usb.intf->dev, "clear bssid on stop failed: %d\n", ret);
+	dwr->associated = false;
+	dwr->usb.running = false;
+	dwr_rx_stop(dwr);
+	dwr_rx_log_summary(dwr, "mac_stop");
 	dwr_tx_cancel_pending(dwr);
 	dwr_hw_stop(dwr);
-	cancel_work_sync(&dwr->rx_work);
 	cancel_work_sync(&dwr->reset_work);
 }
 
@@ -167,21 +176,66 @@ static void dwr_mac_bss_info_changed(struct ieee80211_hw *hw,
 				     u64 changed)
 {
 	struct dwr_dev *dwr = hw_to_dwr(hw);
+	int ret;
 
 	dwr_dbg(&dwr->usb.intf->dev,
 		"bss_info_changed: assoc=%d aid=%u changed=0x%llx\n",
 		info->assoc, info->aid, changed);
+
+	if (changed & BSS_CHANGED_BSSID) {
+		if (is_valid_ether_addr(info->bssid)) {
+			ret = dwr_set_bssid(dwr, info->bssid);
+			if (ret)
+				dwr_warn(&dwr->usb.intf->dev,
+					 "set bssid %pM failed: %d\n",
+					 info->bssid, ret);
+		} else {
+			ret = dwr_clear_bssid(dwr);
+			if (ret)
+				dwr_dbg(&dwr->usb.intf->dev,
+					"clear bssid on invalid bss update failed: %d\n", ret);
+		}
+	}
+
+	if (changed & BSS_CHANGED_ASSOC) {
+		dwr->associated = info->assoc;
+		if (!info->assoc && dwr->bssid_valid) {
+			ret = dwr_clear_bssid(dwr);
+			if (ret)
+				dwr_dbg(&dwr->usb.intf->dev,
+					"clear bssid on disassoc failed: %d\n", ret);
+		}
+		/* TODO(openbsd-rum-port): program association-related timing/state registers once confirmed from if_rum.c. */
+	}
 }
 
 static int dwr_mac_add_interface(struct ieee80211_hw *hw,
 				 struct ieee80211_vif *vif)
 {
+	struct dwr_dev *dwr = hw_to_dwr(hw);
+
+	if (vif->type != NL80211_IFTYPE_STATION)
+		return -EOPNOTSUPP;
+	if (dwr->vif_sta)
+		return -EBUSY;
+
+	dwr->vif_sta = vif;
+	dwr->associated = false;
+	dwr->bssid_valid = false;
+	eth_zero_addr(dwr->bssid);
 	return 0;
 }
 
 static void dwr_mac_remove_interface(struct ieee80211_hw *hw,
 				     struct ieee80211_vif *vif)
 {
+	struct dwr_dev *dwr = hw_to_dwr(hw);
+
+	if (dwr->vif_sta == vif)
+		dwr->vif_sta = NULL;
+	dwr->associated = false;
+	if (dwr_clear_bssid(dwr))
+		dwr_dbg(&dwr->usb.intf->dev, "clear bssid on vif removal failed\n");
 }
 
 static void dwr_mac_configure_filter(struct ieee80211_hw *hw,
@@ -228,9 +282,10 @@ static int dwr_usb_probe(struct usb_interface *intf,
 	dwr->usb.udev = usb_get_dev(interface_to_usbdev(intf));
 	dwr->usb.intf = intf;
 	mutex_init(&dwr->usb.io_mutex);
+	init_usb_anchor(&dwr->usb.tx_anchor);
 	spin_lock_init(&dwr->tx_lock);
-	INIT_WORK(&dwr->rx_work, dwr_rx_work);
 	INIT_WORK(&dwr->reset_work, dwr_reset_work);
+	dwr_rx_init_state(dwr);
 
 	ret = dwr_detect_endpoints(dwr);
 	if (ret)
@@ -278,8 +333,12 @@ static void dwr_usb_disconnect(struct usb_interface *intf)
 		return;
 
 	usb_set_intfdata(intf, NULL);
+	(void)dwr_clear_bssid(dwr);
+	dwr->associated = false;
+	dwr->usb.running = false;
+	dwr_rx_stop(dwr);
+	dwr_rx_log_summary(dwr, "disconnect");
 	dwr_tx_cancel_pending(dwr);
-	cancel_work_sync(&dwr->rx_work);
 	cancel_work_sync(&dwr->reset_work);
 	if (dwr->registered_hw)
 		ieee80211_unregister_hw(dwr->hw);

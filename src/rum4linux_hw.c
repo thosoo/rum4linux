@@ -343,3 +343,47 @@ int dwr_set_channel(struct dwr_dev *dwr, struct ieee80211_channel *chan)
 
 	return dwr_rf_set_channel_2ghz(dwr, chan->hw_value);
 }
+
+int dwr_set_bssid(struct dwr_dev *dwr, const u8 *bssid)
+{
+	u32 low;
+	u32 high;
+	int ret;
+
+	if (!bssid)
+		return -EINVAL;
+
+	/*
+	 * OpenBSD rum(4) programs BSSID into RT2573 MAC_CSR4/5.
+	 * MAC_CSR4 gets bytes 0..3, MAC_CSR5 gets bytes 4..5 in low bits.
+	 */
+	low = bssid[0] | (bssid[1] << 8) | (bssid[2] << 16) | (bssid[3] << 24);
+	high = bssid[4] | (bssid[5] << 8);
+
+	ret = dwr_write_reg(dwr, DWR_MAC_CSR4, low);
+	if (ret)
+		return ret;
+	ret = dwr_write_reg(dwr, DWR_MAC_CSR5, high);
+	if (ret)
+		return ret;
+
+	ether_addr_copy(dwr->bssid, bssid);
+	dwr->bssid_valid = true;
+	return 0;
+}
+
+int dwr_clear_bssid(struct dwr_dev *dwr)
+{
+	int ret;
+
+	ret = dwr_write_reg(dwr, DWR_MAC_CSR4, 0);
+	if (ret)
+		return ret;
+	ret = dwr_write_reg(dwr, DWR_MAC_CSR5, 0);
+	if (ret)
+		return ret;
+
+	eth_zero_addr(dwr->bssid);
+	dwr->bssid_valid = false;
+	return 0;
+}

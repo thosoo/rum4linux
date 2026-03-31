@@ -31,17 +31,38 @@ This is a structural generalization pass, not a claim of broad functional enable
 - BBP busy/read/write helpers and bounded init defaults
 - RF/channel scaffold for RT2528 2.4GHz path with bounded calibration mapping
 - bounded post-channel sanity and one bounded recovery attempt
-- bounded TX descriptor scaffolding with runtime submission intentionally blocked
+- bounded TX descriptor path with runtime bulk-OUT submission and mac80211 tx status handoff on URB completion
+- bounded RX scaffolding:
+  - fixed-size bulk-IN URB pool and per-URB buffers
+  - explicit start/stop/cancel/free teardown for stop/disconnect/error paths
+  - conservative descriptor parse of rt73/rum-style word0/word1 fields (length/drop/crc/ofdm/signal/rssi/frame-offset)
+  - debug logging and bounded RX counters
+  - URB resubmission while running
+  - strict frame boundary checks and conservative `ieee80211_rx_irqsafe()` delivery for packets with source-backed descriptor semantics
+- minimal station runtime hooks:
+  - single station interface gate
+  - BSSID programming via MAC_CSR4/5
+  - conservative association state tracking
+  - explicit BSSID clear programming on disassociation/remove/stop/disconnect
 
 ## Explicitly incomplete / deferred
 
-- complete TX descriptor coverage for all `rum(4)`-family variants
-- RX descriptor parsing and RX datapath
+- complete TX descriptor and hardware ACK/retry status coverage for all `rum(4)`-family variants
+- TX rate programming beyond conservative CCK mappings used by the current minimal descriptor path
+- high-confidence RX descriptor validation across additional variants/revisions beyond the current conservative mapping
 - association / operational station behavior
 - broad USB ID enumeration and per-device bring-up policies
 - broad firmware naming certainty across the whole family
 
 Uncertain parts should stay tagged as `TODO(openbsd-rum-port)` until confirmed from primary sources.
+
+Current RX descriptor assumptions are intentionally narrow and source-backed:
+
+- `word0` data-byte-count extraction and drop/CRC/ofdm flag usage from Linux `rt73usb` receive path.
+- `word1` signal/rssi/frame-offset extraction pattern from Linux `rt73usb`.
+- OpenBSD `if_rum.c` framing model (USB payload includes descriptor metadata plus frame body).
+
+Any broader bit semantics or per-revision behavior remain `TODO(openbsd-rum-port)`.
 
 ## Device-ID and coverage policy
 

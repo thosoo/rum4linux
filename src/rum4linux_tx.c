@@ -15,11 +15,16 @@ struct dwr_tx_desc_min {
 	u8 plcp_length_hi;
 };
 
+struct dwr_tx_urb_ctx {
+	struct dwr_dev *dwr;
+	struct sk_buff *skb;
+	u8 *buf;
+};
+
 #define DWR_TX_VALID BIT(1)
 #define DWR_TX_IFS_SIFS BIT(6)
 #define DWR_TX_NEED_ACK BIT(3)
-#define DWR_TX_DESC_SEMANTICS_CONFIRMED false
-#define DWR_TX_RATE_1MBPS_500K_UNITS 2
+#define DWR_TX_MAX_FRAME_LEN 4095
 
 static u8 dwr_plcp_signal_cck(u8 rate_500k)
 {
@@ -38,20 +43,56 @@ static u8 dwr_plcp_signal_cck(u8 rate_500k)
 	}
 }
 
+static int dwr_tx_signal_rate_500k_from_idx(int idx, u8 *signal, u8 *rate_500k)
+{
+	switch (idx) {
+	case 0:
+		*rate_500k = 2;
+		break;
+	case 1:
+		*rate_500k = 4;
+		break;
+	case 2:
+		*rate_500k = 11;
+		break;
+	case 3:
+		*rate_500k = 22;
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	*signal = dwr_plcp_signal_cck(*rate_500k);
+	if (*signal == 0xff)
+		return -EINVAL;
+
+	return 0;
+}
+
 static int dwr_tx_build_desc(struct sk_buff *skb, struct dwr_tx_desc_min *desc)
 {
 	u16 plcp_length;
 	u8 signal;
+	u8 rate_500k;
 	u16 wme;
+	u32 flags;
+	const struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+	int ret;
+
+	if (!skb || skb->len == 0 || skb->len > DWR_TX_MAX_FRAME_LEN)
+		return -EMSGSIZE;
 
 	memset(desc, 0, sizeof(*desc));
 
-	signal = dwr_plcp_signal_cck(DWR_TX_RATE_1MBPS_500K_UNITS);
-	if (signal == 0xff)
-		return -EINVAL;
+	ret = dwr_tx_signal_rate_500k_from_idx(info->control.rates[0].idx,
+					       &signal, &rate_500k);
+	if (ret)
+		return ret;
 
-	desc->flags = cpu_to_le32(DWR_TX_VALID | DWR_TX_IFS_SIFS | DWR_TX_NEED_ACK |
-				  (skb->len << 16));
+	flags = DWR_TX_VALID | DWR_TX_IFS_SIFS | (skb->len << 16);
+	if (!(info->flags & IEEE80211_TX_CTL_NO_ACK))
+		flags |= DWR_TX_NEED_ACK;
+	desc->flags = cpu_to_le32(flags);
 
 	/* OpenBSD rum_setup_tx_desc() default queue/wme words. */
 	wme = (0) | (2 << 4) | (4 << 8) | (10 << 12);
@@ -61,44 +102,97 @@ static int dwr_tx_build_desc(struct sk_buff *skb, struct dwr_tx_desc_min *desc)
 	desc->plcp_service = 4;
 
 	/* OpenBSD CCK plcp length formula; len includes CRC. */
-	plcp_length = (16 * (skb->len + IEEE80211_FCS_LEN) +
-		       DWR_TX_RATE_1MBPS_500K_UNITS - 1) /
-		      DWR_TX_RATE_1MBPS_500K_UNITS;
+	plcp_length = (16 * (skb->len + IEEE80211_FCS_LEN) + rate_500k - 1) /
+		      rate_500k;
 	desc->plcp_length_lo = plcp_length & 0xff;
 	desc->plcp_length_hi = plcp_length >> 8;
 
-	/* TODO(openbsd-rum-port): validate complete TX descriptor semantics before enabling TX submission. */
-	if (!DWR_TX_DESC_SEMANTICS_CONFIRMED)
-		return -EOPNOTSUPP;
-
+	/* TODO(openbsd-rum-port): map per-rate/per-queue TX descriptor fields from if_rum.c/rt73usb before broad rate support. */
 	return 0;
+}
+
+static void dwr_tx_complete(struct urb *urb)
+{
+	struct dwr_tx_urb_ctx *ctx = urb->context;
+	struct ieee80211_tx_info *info;
+
+	if (!ctx)
+		return;
+
+	if (ctx->skb) {
+		info = IEEE80211_SKB_CB(ctx->skb);
+		ieee80211_tx_info_clear_status(info);
+		/* TODO(openbsd-rum-port): map hardware TX success/ACK feedback once source-backed TX status path is implemented. */
+		ieee80211_tx_status_irqsafe(ctx->dwr->hw, ctx->skb);
+	}
+
+	kfree(ctx->buf);
+	kfree(ctx);
 }
 
 int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 			bool *ownership_transferred)
 {
 	struct dwr_tx_desc_min desc;
+	struct dwr_tx_urb_ctx *ctx;
+	struct urb *urb;
+	u8 *buf;
 	int ret;
+	size_t total;
 
 	*ownership_transferred = false;
+	if (!READ_ONCE(dwr->usb.running))
+		return -ENETDOWN;
 
 	ret = dwr_tx_build_desc(skb, &desc);
+	if (ret)
+		return ret;
+
+	total = sizeof(desc) + skb->len;
+	buf = kmalloc(total, GFP_ATOMIC);
+	if (!buf)
+		return -ENOMEM;
+
+	ctx = kzalloc(sizeof(*ctx), GFP_ATOMIC);
+	if (!ctx) {
+		kfree(buf);
+		return -ENOMEM;
+	}
+
+	urb = usb_alloc_urb(0, GFP_ATOMIC);
+	if (!urb) {
+		kfree(ctx);
+		kfree(buf);
+		return -ENOMEM;
+	}
+
+	memcpy(buf, &desc, sizeof(desc));
+	memcpy(buf + sizeof(desc), skb->data, skb->len);
+
+	ctx->dwr = dwr;
+	ctx->skb = skb;
+	ctx->buf = buf;
+
+	usb_fill_bulk_urb(urb, dwr->usb.udev,
+			 usb_sndbulkpipe(dwr->usb.udev, dwr->usb.bulk_out_ep),
+			 buf, total, dwr_tx_complete, ctx);
+	usb_anchor_urb(urb, &dwr->usb.tx_anchor);
+
+	ret = usb_submit_urb(urb, GFP_ATOMIC);
 	if (ret) {
-		dwr_warn(&dwr->usb.intf->dev,
-			 "tx blocked: len=%u ep=0x%02x desc_len=%zu submit=0 reason=%d\n",
-			 skb->len, dwr->usb.bulk_out_ep, sizeof(desc), ret);
+		usb_unanchor_urb(urb);
+		usb_free_urb(urb);
+		kfree(ctx->buf);
+		kfree(ctx);
 		return ret;
 	}
 
-	/* Defensive backstop: TX runtime is intentionally disabled until descriptors are confirmed. */
-	dwr_warn(&dwr->usb.intf->dev,
-		 "tx blocked: len=%u ep=0x%02x desc_len=%zu submit=0 reason=%d\n",
-		 skb->len, dwr->usb.bulk_out_ep, sizeof(desc), -EOPNOTSUPP);
-	return -EOPNOTSUPP;
+	*ownership_transferred = true;
+	usb_free_urb(urb);
+	return 0;
 }
 
 void dwr_tx_cancel_pending(struct dwr_dev *dwr)
 {
-	(void)dwr;
-	/* No-op while TX URB submission remains intentionally disabled. */
+	usb_kill_anchored_urbs(&dwr->usb.tx_anchor);
 }

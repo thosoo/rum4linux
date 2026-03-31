@@ -7,4 +7,5 @@ rum4linux-y := \
 	src/rum4linux_fw.o \
 	src/rum4linux_bbp.o \
 	src/rum4linux_rf.o \
-	src/rum4linux_tx.o
+	src/rum4linux_tx.o \
+	src/rum4linux_rx.o
