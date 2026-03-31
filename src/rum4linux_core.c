@@ -134,21 +134,17 @@ static void dwr_link_tuner_workfn(struct work_struct *work)
 	rssi = READ_ONCE(dwr->link_rssi_dbm);
 	have_rssi = rssi != DWR_LINK_RSSI_INVALID_DBM;
 	if (!have_rssi) {
-		low_bound = 0x1c;
-		up_bound = 0x20;
+		low_bound = dwr->bbp17_base - 0x04;
+		up_bound = dwr->bbp17_base;
 	} else if (rssi > -82) {
-		low_bound = 0x1c;
-		up_bound = 0x40;
+		low_bound = dwr->bbp17_base - 0x04;
+		up_bound = dwr->bbp17_base + 0x20;
 	} else if (rssi > -84) {
-		low_bound = 0x1c;
-		up_bound = 0x20;
+		low_bound = dwr->bbp17_base - 0x04;
+		up_bound = dwr->bbp17_base;
 	} else {
-		low_bound = 0x1c;
-		up_bound = 0x1c;
-	}
-	if (dwr->eeprom.ext_2ghz_lna) {
-		low_bound += 0x14;
-		up_bound += 0x10;
+		low_bound = dwr->bbp17_base - 0x04;
+		up_bound = dwr->bbp17_base - 0x04;
 	}
 
 	next_vgc = dwr->vgc_level;
@@ -296,7 +292,7 @@ static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *
 	ret = dwr_set_tsf_sync(dwr, true, info->beacon_int);
 	if (ret)
 		dwr_dbg(&dwr->usb.intf->dev, "run enter tsf sync failed: %d\n", ret);
-	ret = dwr_set_vgc(dwr, 0x20);
+	ret = dwr_set_vgc(dwr, dwr->bbp17_base);
 	if (ret)
 		dwr_dbg(&dwr->usb.intf->dev, "run enter set vgc failed: %d\n", ret);
 	WRITE_ONCE(dwr->link_rssi_dbm, DWR_LINK_RSSI_INVALID_DBM);
@@ -468,6 +464,7 @@ static int dwr_usb_probe(struct usb_interface *intf,
 	INIT_DELAYED_WORK(&dwr->link_tuner_work, dwr_link_tuner_workfn);
 	dwr_rx_init_state(dwr);
 	dwr->link_rssi_dbm = DWR_LINK_RSSI_INVALID_DBM;
+	dwr->bbp17_base = 0x20;
 
 	ret = dwr_detect_endpoints(dwr);
 	if (ret)

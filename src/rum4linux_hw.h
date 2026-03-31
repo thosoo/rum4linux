@@ -93,6 +93,8 @@
 #define DWR_STA_CSR0_PLCP_ERROR_MASK GENMASK(31, 16)
 #define DWR_STA_CSR1_PHYSICAL_ERROR_MASK GENMASK(15, 0)
 #define DWR_STA_CSR1_FALSE_CCA_MASK GENMASK(31, 16)
+#define DWR_PHY_CSR0_PA_PE_2GHZ BIT(16)
+#define DWR_PHY_CSR0_PA_PE_5GHZ BIT(17)
 
 #define DWR_RF_5226            1
 #define DWR_RF_2528            2
@@ -182,6 +184,7 @@ struct dwr_dev {
 	bool associated;
 	u16 aid;
 	s8 link_rssi_dbm;
+	u8 bbp17_base;
 	u8 vgc_level;
 	struct ieee80211_vif *vif_sta;
 	unsigned int filter_flags;
@@ -206,6 +209,7 @@ int dwr_read_eeprom(struct dwr_dev *dwr, u16 off, void *buf, size_t len);
 int dwr_hw_init(struct dwr_dev *dwr);
 void dwr_hw_stop(struct dwr_dev *dwr);
 int dwr_set_channel(struct dwr_dev *dwr, struct ieee80211_channel *chan);
+int dwr_apply_2ghz_bbp_profile(struct dwr_dev *dwr);
 int dwr_set_macaddr(struct dwr_dev *dwr, const u8 *addr);
 int dwr_set_vgc(struct dwr_dev *dwr, u8 vgc_level);
 int dwr_set_bssid(struct dwr_dev *dwr, const u8 *bssid);

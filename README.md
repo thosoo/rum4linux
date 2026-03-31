@@ -14,6 +14,7 @@ Implemented scaffold pieces:
 - firmware upload scaffold with MCU handoff/wait flow
 - BBP init scaffold with OpenBSD-derived defaults plus EEPROM BBP overrides
 - RF/channel scaffold for RT2528 2.4GHz channel programming with bounded calibration wiring
+- source-backed 2.4GHz-only band profile apply path (OpenBSD rum_select_band subset) for BBP17/35/96/97/98/104, ext_2ghz_lna BBP75/86/88 handling, and PHY_CSR0 PA_PE_2GHZ selection
 - bounded post-channel sanity check and one bounded recovery attempt
 - bounded TX descriptor path with runtime bulk-OUT submission and URB-completion status handoff to mac80211
 - bounded RX bulk-IN URB pipeline with strict descriptor/frame sanity checks and conservative mac80211 delivery
@@ -26,6 +27,7 @@ Implemented scaffold pieces:
 - RX CCK rate decoding now follows source-backed raw 100kbps descriptor values (10/20/55/110) instead of low-bit masking
 - station RX filter parity tightened to rt73usb semantics (ACK/CTS follows FIF_CONTROL, control follows FIF_CONTROL|FIF_PSPOLL)
 - conservative BBP17/VGC tuner added for the narrow associated station path using source-backed RSSI/FCS/false-CCA inputs (false_cca > 512 raises gain, < 100 lowers gain within guarded bounds)
+- BBP17 tuner now keys off the current 2.4GHz base profile value instead of a hardcoded 0x20 baseline
 
 Still intentionally incomplete:
 

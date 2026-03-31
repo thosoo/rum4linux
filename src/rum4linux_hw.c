@@ -224,6 +224,9 @@ static int dwr_recover_after_sanity_failure(struct dwr_dev *dwr, u8 chan)
 	ret = dwr_bbp_init(dwr);
 	if (ret)
 		return ret;
+	ret = dwr_apply_2ghz_bbp_profile(dwr);
+	if (ret)
+		return ret;
 	ret = dwr_rf_set_channel_2ghz(dwr, chan);
 	if (ret)
 		return ret;
@@ -243,6 +246,65 @@ static void dwr_log_init_summary(struct dwr_dev *dwr)
 		 dwr->hw_state.post_fw_sanity_ok, dwr->hw_state.post_chan_sanity_attempted,
 		 dwr->hw_state.recovery_attempted, dwr->hw_state.recovery_succeeded,
 		 dwr->mac_addr, dwr->eeprom.rf_rev);
+}
+
+int dwr_apply_2ghz_bbp_profile(struct dwr_dev *dwr)
+{
+	u8 bbp17 = 0x20, bbp35 = 0x50, bbp96 = 0x48;
+	u8 bbp97 = 0x48, bbp98 = 0x48, bbp104 = 0x2c;
+	u32 phy_csr0;
+	int ret;
+
+	/* OpenBSD if_rum.c: rum_select_band() 2.4GHz BBP/PA profile. */
+	if (dwr->eeprom.ext_2ghz_lna) {
+		bbp17 += 0x10;
+		bbp96 += 0x10;
+		bbp104 += 0x10;
+	}
+
+	ret = dwr_bbp_write(dwr, 17, bbp17);
+	if (ret)
+		return ret;
+	ret = dwr_bbp_write(dwr, 96, bbp96);
+	if (ret)
+		return ret;
+	ret = dwr_bbp_write(dwr, 104, bbp104);
+	if (ret)
+		return ret;
+
+	if (dwr->eeprom.ext_2ghz_lna) {
+		ret = dwr_bbp_write(dwr, 75, 0x80);
+		if (ret)
+			return ret;
+		ret = dwr_bbp_write(dwr, 86, 0x80);
+		if (ret)
+			return ret;
+		ret = dwr_bbp_write(dwr, 88, 0x80);
+		if (ret)
+			return ret;
+	}
+
+	ret = dwr_bbp_write(dwr, 35, bbp35);
+	if (ret)
+		return ret;
+	ret = dwr_bbp_write(dwr, 97, bbp97);
+	if (ret)
+		return ret;
+	ret = dwr_bbp_write(dwr, 98, bbp98);
+	if (ret)
+		return ret;
+
+	ret = dwr_read_reg(dwr, DWR_PHY_CSR0, &phy_csr0);
+	if (ret)
+		return ret;
+	phy_csr0 &= ~(DWR_PHY_CSR0_PA_PE_2GHZ | DWR_PHY_CSR0_PA_PE_5GHZ);
+	phy_csr0 |= DWR_PHY_CSR0_PA_PE_2GHZ;
+	ret = dwr_write_reg(dwr, DWR_PHY_CSR0, phy_csr0);
+	if (ret)
+		return ret;
+
+	dwr->bbp17_base = bbp17;
+	return 0;
 }
 
 int dwr_hw_init(struct dwr_dev *dwr)
@@ -296,6 +358,13 @@ int dwr_hw_init(struct dwr_dev *dwr)
 		return ret;
 	}
 
+	ret = dwr_apply_2ghz_bbp_profile(dwr);
+	if (ret) {
+		dwr_err(&dwr->usb.intf->dev, "2GHz BBP profile apply failed: %d\n", ret);
+		dwr_log_init_summary(dwr);
+		return ret;
+	}
+
 	ret = dwr_rf_set_channel_2ghz(dwr, default_chan);
 	if (ret) {
 		dwr_err(&dwr->usb.intf->dev,
@@ -329,6 +398,8 @@ void dwr_hw_stop(struct dwr_dev *dwr)
 
 int dwr_set_channel(struct dwr_dev *dwr, struct ieee80211_channel *chan)
 {
+	int ret;
+
 	if (!chan)
 		return -EINVAL;
 	if (chan->band != NL80211_BAND_2GHZ)
@@ -340,6 +411,10 @@ int dwr_set_channel(struct dwr_dev *dwr, struct ieee80211_channel *chan)
 			 chan->hw_value);
 		return 0;
 	}
+
+	ret = dwr_apply_2ghz_bbp_profile(dwr);
+	if (ret)
+		return ret;
 
 	return dwr_rf_set_channel_2ghz(dwr, chan->hw_value);
 }

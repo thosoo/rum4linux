@@ -30,6 +30,7 @@ This is a structural generalization pass, not a claim of broad functional enable
 - firmware upload scaffold and MCU handoff/wait sequence
 - BBP busy/read/write helpers and bounded init defaults
 - RF/channel scaffold for RT2528 2.4GHz path with bounded calibration mapping
+- narrow OpenBSD `rum_select_band()` 2.4GHz subset wired: BBP 17/35/96/97/98/104 + ext_2ghz_lna BBP 75/86/88 + PHY_CSR0 PA-path bit programming
 - bounded post-channel sanity and one bounded recovery attempt
 - bounded TX descriptor path with runtime bulk-OUT submission and mac80211 tx status handoff on URB completion
 - bounded RX scaffolding:
@@ -58,6 +59,7 @@ This is a structural generalization pass, not a claim of broad functional enable
   - RX filter parity tightened to rt73usb station behavior (DROP_ACK_CTS follows FIF_CONTROL; DROP_CONTROL follows FIF_CONTROL|FIF_PSPOLL)
   - RUN-entry TXRX_CSR4 programming now uses one coherent final path for aliased MRR/OFDM-fallback fields
   - conservative BBP17/VGC tuner is wired for associated station mode using rt73usb-backed inputs (RSSI, FCS, false-CCA); false_cca thresholds are intentionally conservative (>512 up, <100 down), and STA_CSR1 low-16 remains non-policy observability only
+  - BBP17/VGC tuner now uses the runtime 2.4GHz profile baseline (including ext_2ghz_lna offset) rather than a fixed 0x20 base
 
 ## Explicitly incomplete / deferred
 
