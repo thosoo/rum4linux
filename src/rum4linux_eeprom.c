@@ -56,7 +56,7 @@ void dwr_eeprom_dump(struct dwr_dev *dwr)
 		 ee->ext_2ghz_lna, ee->ext_5ghz_lna, ee->rffreq,
 		 ee->rssi_2ghz_corr, ee->rssi_5ghz_corr);
 	dwr_info(&dwr->usb.intf->dev,
-		 "eeprom: txpow2g[1..4]=%u,%u,%u,%u raw0=0x%04x raw1=0x%04x raw2=0x%04x raw3=0x%04x\n",
+		 "eeprom: txpow2g[1..4]=%d,%d,%d,%d raw0=0x%04x raw1=0x%04x raw2=0x%04x raw3=0x%04x\n",
 		 ee->txpow_2ghz[0], ee->txpow_2ghz[1], ee->txpow_2ghz[2], ee->txpow_2ghz[3],
 		 ee->raw_words[0], ee->raw_words[1], ee->raw_words[2], ee->raw_words[3]);
 }

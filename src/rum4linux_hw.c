@@ -378,6 +378,30 @@ static const char *dwr_channel_apply_errclass_name(u8 errclass)
 	}
 }
 
+static u8 dwr_channel_apply_failure_sanity_delta_state(bool prev_has, u32 prev_val,
+						       bool curr_has, u32 curr_val)
+{
+	if (!prev_has || !curr_has)
+		return DWR_CHAN_APPLY_DELTA_SANITY_MISSING;
+	if (prev_val == curr_val)
+		return DWR_CHAN_APPLY_DELTA_SANITY_SAME;
+	return DWR_CHAN_APPLY_DELTA_SANITY_CHANGED;
+}
+
+static const char *dwr_channel_apply_sanity_delta_name(u8 delta)
+{
+	switch (delta) {
+	case DWR_CHAN_APPLY_DELTA_SANITY_MISSING:
+		return "missing_before_or_now";
+	case DWR_CHAN_APPLY_DELTA_SANITY_SAME:
+		return "same";
+	case DWR_CHAN_APPLY_DELTA_SANITY_CHANGED:
+		return "changed";
+	default:
+		return "unknown";
+	}
+}
+
 static void dwr_record_channel_apply_error(struct dwr_dev *dwr, int err)
 {
 	u8 errclass = dwr_classify_channel_apply_error(dwr->hw_state.last_channel_apply_stage,
@@ -413,6 +437,48 @@ static void dwr_record_channel_apply_failure_snapshot(struct dwr_dev *dwr,
 						      bool runtime, u8 chan,
 						      const struct dwr_sanity_capture *capture)
 {
+	struct dwr_hw_state *hs = &dwr->hw_state;
+	bool prev_valid = hs->last_channel_apply_failure_snapshot_valid;
+	bool prev_has_mac_csr0 = hs->last_channel_apply_failure_has_mac_csr0;
+	bool prev_has_phy_csr4 = hs->last_channel_apply_failure_has_phy_csr4;
+	bool prev_has_bbp0 = hs->last_channel_apply_failure_has_bbp0;
+	bool prev_has_bbp3 = hs->last_channel_apply_failure_has_bbp3;
+	u32 prev_mac_csr0 = hs->last_channel_apply_failure_mac_csr0;
+	u32 prev_phy_csr4 = hs->last_channel_apply_failure_phy_csr4;
+	u8 prev_bbp0 = hs->last_channel_apply_failure_bbp0;
+	u8 prev_bbp3 = hs->last_channel_apply_failure_bbp3;
+
+	hs->last_channel_apply_failure_delta_valid = true;
+	hs->last_channel_apply_failure_delta_prev_valid = prev_valid;
+	hs->last_channel_apply_failure_delta_runtime_same = prev_valid &&
+		(hs->last_channel_apply_failure_was_runtime == runtime);
+	hs->last_channel_apply_failure_delta_channel_same = prev_valid &&
+		(hs->last_channel_apply_failure_channel == chan);
+	hs->last_channel_apply_failure_delta_stage_same = prev_valid &&
+		(hs->last_channel_apply_failure_stage == hs->last_channel_apply_stage);
+	hs->last_channel_apply_failure_delta_errclass_same = prev_valid &&
+		(hs->last_channel_apply_failure_errclass == hs->last_channel_apply_errclass);
+	hs->last_channel_apply_failure_delta_origin_same = prev_valid &&
+		(hs->last_channel_apply_failure_origin == hs->last_channel_apply_origin);
+	hs->last_channel_apply_failure_delta_errno_same = prev_valid &&
+		(hs->last_channel_apply_failure_err == hs->last_channel_apply_err);
+	hs->last_channel_apply_failure_delta_mac_csr0_state =
+		dwr_channel_apply_failure_sanity_delta_state(prev_has_mac_csr0, prev_mac_csr0,
+							     capture && capture->has_mac_csr0,
+							     capture ? capture->mac_csr0 : 0);
+	hs->last_channel_apply_failure_delta_phy_csr4_state =
+		dwr_channel_apply_failure_sanity_delta_state(prev_has_phy_csr4, prev_phy_csr4,
+							     capture && capture->has_phy_csr4,
+							     capture ? capture->phy_csr4 : 0);
+	hs->last_channel_apply_failure_delta_bbp0_state =
+		dwr_channel_apply_failure_sanity_delta_state(prev_has_bbp0, prev_bbp0,
+							     capture && capture->has_bbp0,
+							     capture ? capture->bbp0 : 0);
+	hs->last_channel_apply_failure_delta_bbp3_state =
+		dwr_channel_apply_failure_sanity_delta_state(prev_has_bbp3, prev_bbp3,
+							     capture && capture->has_bbp3,
+							     capture ? capture->bbp3 : 0);
+
 	dwr->hw_state.last_channel_apply_failure_snapshot_valid = true;
 	dwr->hw_state.last_channel_apply_failure_was_runtime = runtime;
 	dwr->hw_state.last_channel_apply_failure_channel = chan;
@@ -581,7 +647,7 @@ log_first_pass_failure:
 void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason)
 {
 	dwr_info(&dwr->usb.intf->dev,
-		 "channel apply summary (%s): init=%u runtime=%u first_pass_ok=%u first_pass_fail=%u rec_attempt=%u rec_ok=%u rec_fail=%u class_invalid=%u class_unsupported=%u class_timeout=%u class_io=%u class_sanity=%u class_unknown=%u origin_bbp=%u origin_rf=%u origin_sanity_mac=%u origin_sanity_phy=%u origin_sanity_bbp0=%u origin_sanity_bbp3=%u origin_sanity_pattern=%u origin_rec_bbp_init=%u origin_rec_bbp=%u origin_rec_rf=%u origin_rec_sanity_mac=%u origin_rec_sanity_phy=%u origin_rec_sanity_bbp0=%u origin_rec_sanity_bbp3=%u origin_rec_sanity_pattern=%u origin_unknown=%u last_runtime=%u last_chan=%u last_stage=%s last_err=%d last_class=%s last_origin=%s fail_valid=%u fail_runtime=%u fail_chan=%u fail_stage=%s fail_err=%d fail_class=%s fail_origin=%s fail_has={mac:%u phy:%u bbp0:%u bbp3:%u} fail_vals={mac:0x%08x phy:0x%08x bbp0:0x%02x bbp3:0x%02x}\n",
+		 "channel apply summary (%s): init=%u runtime=%u first_pass_ok=%u first_pass_fail=%u rec_attempt=%u rec_ok=%u rec_fail=%u class_invalid=%u class_unsupported=%u class_timeout=%u class_io=%u class_sanity=%u class_unknown=%u origin_bbp=%u origin_rf=%u origin_sanity_mac=%u origin_sanity_phy=%u origin_sanity_bbp0=%u origin_sanity_bbp3=%u origin_sanity_pattern=%u origin_rec_bbp_init=%u origin_rec_bbp=%u origin_rec_rf=%u origin_rec_sanity_mac=%u origin_rec_sanity_phy=%u origin_rec_sanity_bbp0=%u origin_rec_sanity_bbp3=%u origin_rec_sanity_pattern=%u origin_unknown=%u last_runtime=%u last_chan=%u last_stage=%s last_err=%d last_class=%s last_origin=%s fail_valid=%u fail_runtime=%u fail_chan=%u fail_stage=%s fail_err=%d fail_class=%s fail_origin=%s fail_has={mac:%u phy:%u bbp0:%u bbp3:%u} fail_vals={mac:0x%08x phy:0x%08x bbp0:0x%02x bbp3:0x%02x} fail_delta={valid:%u prev_valid:%u runtime:%s chan:%s stage:%s class:%s origin:%s err:%s sanity:{mac:%s phy:%s bbp0:%s bbp3:%s}}\n",
 		 reason,
 		 dwr->hw_state.init_channel_apply_count,
 		 dwr->hw_state.runtime_channel_apply_count,
@@ -632,7 +698,19 @@ void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason)
 		 dwr->hw_state.last_channel_apply_failure_mac_csr0,
 		 dwr->hw_state.last_channel_apply_failure_phy_csr4,
 		 dwr->hw_state.last_channel_apply_failure_bbp0,
-		 dwr->hw_state.last_channel_apply_failure_bbp3);
+		 dwr->hw_state.last_channel_apply_failure_bbp3,
+		 dwr->hw_state.last_channel_apply_failure_delta_valid,
+		 dwr->hw_state.last_channel_apply_failure_delta_prev_valid,
+		 dwr->hw_state.last_channel_apply_failure_delta_runtime_same ? "same" : "different",
+		 dwr->hw_state.last_channel_apply_failure_delta_channel_same ? "same" : "different",
+		 dwr->hw_state.last_channel_apply_failure_delta_stage_same ? "same" : "different",
+		 dwr->hw_state.last_channel_apply_failure_delta_errclass_same ? "same" : "different",
+		 dwr->hw_state.last_channel_apply_failure_delta_origin_same ? "same" : "different",
+		 dwr->hw_state.last_channel_apply_failure_delta_errno_same ? "same" : "different",
+		 dwr_channel_apply_sanity_delta_name(dwr->hw_state.last_channel_apply_failure_delta_mac_csr0_state),
+		 dwr_channel_apply_sanity_delta_name(dwr->hw_state.last_channel_apply_failure_delta_phy_csr4_state),
+		 dwr_channel_apply_sanity_delta_name(dwr->hw_state.last_channel_apply_failure_delta_bbp0_state),
+		 dwr_channel_apply_sanity_delta_name(dwr->hw_state.last_channel_apply_failure_delta_bbp3_state));
 }
 
 static void dwr_log_init_summary(struct dwr_dev *dwr)
@@ -762,6 +840,13 @@ int dwr_hw_init(struct dwr_dev *dwr)
 	if (ret) {
 		dwr_err(&dwr->usb.intf->dev,
 			"rf/channel init failed for channel %u: %d\n", default_chan, ret);
+		dwr_log_init_summary(dwr);
+		return ret;
+	}
+
+	ret = dwr_set_rx_timing_defaults(dwr);
+	if (ret) {
+		dwr_err(&dwr->usb.intf->dev, "rx timing defaults init failed: %d\n", ret);
 		dwr_log_init_summary(dwr);
 		return ret;
 	}
@@ -937,27 +1022,26 @@ int dwr_set_basic_rates(struct dwr_dev *dwr, u32 basic_rates)
 int dwr_set_tsf_sync(struct dwr_dev *dwr, bool enable, u16 beacon_int)
 {
 	u32 reg;
+	u32 timestamp_comp;
 	int ret;
 
 	ret = dwr_read_reg(dwr, DWR_TXRX_CSR9, &reg);
 	if (ret)
 		return ret;
 
-	reg &= ~(DWR_TXRX_CSR9_BEACON_INTERVAL_MASK |
-		 DWR_TXRX_CSR9_TSF_TICKING |
-		 DWR_TXRX_CSR9_TSF_MODE_MASK |
-		 DWR_TXRX_CSR9_ENABLE_TBTT |
-		 DWR_TXRX_CSR9_GENERATE_BEACON);
-	reg |= ((u32)beacon_int * 16) & DWR_TXRX_CSR9_BEACON_INTERVAL_MASK;
+	/*
+	 * OpenBSD rum_enable_tsf_sync() preserves TXRX_CSR9[31:24] and
+	 * programs TSF mode/interval in the low 24 bits for STA mode.
+	 * TODO(openbsd-rum-port): no primary-source-confirmed fixed value for
+	 * TXRX_CSR9 timestamp compensation in this narrow path; preserve it.
+	 */
+	timestamp_comp = reg & DWR_TXRX_CSR9_TIMESTAMP_COMP_MASK;
+	reg = timestamp_comp;
 
 	if (enable) {
+		reg |= ((u32)beacon_int * 16) & DWR_TXRX_CSR9_BEACON_INTERVAL_MASK;
 		reg |= DWR_TXRX_CSR9_TSF_TICKING | DWR_TXRX_CSR9_ENABLE_TBTT;
-		reg &= ~DWR_TXRX_CSR9_TSF_MODE_MASK;
 		reg |= FIELD_PREP(DWR_TXRX_CSR9_TSF_MODE_MASK, 1);
-		reg &= ~DWR_TXRX_CSR9_GENERATE_BEACON;
-	} else {
-		reg &= ~(DWR_TXRX_CSR9_TSF_TICKING | DWR_TXRX_CSR9_ENABLE_TBTT |
-			 DWR_TXRX_CSR9_TSF_MODE_MASK | DWR_TXRX_CSR9_GENERATE_BEACON);
 	}
 
 	return dwr_write_reg(dwr, DWR_TXRX_CSR9, reg);
@@ -1064,7 +1148,12 @@ int dwr_set_erp_timing(struct dwr_dev *dwr, bool short_preamble,
 		  DWR_MAC_CSR8_SIFS_AFTER_RX_OFDM_MASK |
 		  DWR_MAC_CSR8_EIFS_MASK);
 	mac8 |= FIELD_PREP(DWR_MAC_CSR8_SIFS_MASK, sifs);
-	mac8 |= FIELD_PREP(DWR_MAC_CSR8_SIFS_AFTER_RX_OFDM_MASK, 3);
+	/*
+	 * OpenBSD if_rumreg.h RT2573_DEF_MAC sets MAC_CSR8 to 0x016c030a:
+	 * SIFS=0x0a, SIFS_after_RX_OFDM=0x03, EIFS=0x016c.
+	 */
+	mac8 |= FIELD_PREP(DWR_MAC_CSR8_SIFS_AFTER_RX_OFDM_MASK,
+			   DWR_RT2573_MAC_CSR8_SIFS_OFDM_DEFAULT);
 	mac8 |= FIELD_PREP(DWR_MAC_CSR8_EIFS_MASK, eifs);
 	return dwr_write_reg(dwr, DWR_MAC_CSR8, mac8);
 }
@@ -1079,8 +1168,14 @@ int dwr_set_rx_timing_defaults(struct dwr_dev *dwr)
 		return ret;
 
 	reg &= ~(DWR_TXRX_CSR0_RX_ACK_TIMEOUT_MASK | DWR_TXRX_CSR0_TSF_OFFSET_MASK);
-	reg |= FIELD_PREP(DWR_TXRX_CSR0_RX_ACK_TIMEOUT_MASK, 0x32);
-	reg |= FIELD_PREP(DWR_TXRX_CSR0_TSF_OFFSET_MASK, 24);
+	/*
+	 * OpenBSD if_rumreg.h RT2573_DEF_MAC sets TXRX_CSR0=0x025fb032:
+	 * RX_ACK_TIMEOUT=0x32 and TSF_OFFSET=24.
+	 */
+	reg |= FIELD_PREP(DWR_TXRX_CSR0_RX_ACK_TIMEOUT_MASK,
+			  DWR_RT2573_TXRX_CSR0_ACK_TIMEOUT_DEFAULT);
+	reg |= FIELD_PREP(DWR_TXRX_CSR0_TSF_OFFSET_MASK,
+			  DWR_RT2573_TXRX_CSR0_TSF_OFFSET_DEFAULT);
 	return dwr_write_reg(dwr, DWR_TXRX_CSR0, reg);
 }
 

@@ -28,6 +28,8 @@ struct dwr_tx_urb_ctx {
 #define DWR_TX_IFS_SIFS BIT(6)
 #define DWR_TX_NEED_ACK BIT(3)
 #define DWR_TX_MAX_FRAME_LEN 4095
+#define DWR_PLCP_LENGEXT BIT(7)
+#define DWR_PLCP_SHORT_PREAMBLE BIT(3)
 
 static u8 dwr_plcp_signal_cck(u8 rate_500k)
 {
@@ -73,13 +75,17 @@ static int dwr_tx_signal_rate_500k_from_idx(int idx, u8 *signal, u8 *rate_500k)
 	return 0;
 }
 
-static int dwr_tx_build_desc(struct sk_buff *skb, struct dwr_tx_desc_min *desc)
+static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
+			     struct dwr_tx_desc_min *desc)
 {
 	u16 plcp_length;
 	u8 signal;
 	u8 rate_500k;
+	u32 payload_len_crc;
 	u16 wme;
 	u32 flags;
+	u32 remainder;
+	bool short_preamble;
 	const struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	int ret;
 
@@ -104,10 +110,19 @@ static int dwr_tx_build_desc(struct sk_buff *skb, struct dwr_tx_desc_min *desc)
 	desc->xflags = cpu_to_le16(0);
 	desc->plcp_signal = signal;
 	desc->plcp_service = 4;
+	short_preamble = !!(dwr->hw->conf.flags & IEEE80211_CONF_SHORT_PREAMBLE);
 
 	/* OpenBSD CCK plcp length formula; len includes CRC. */
-	plcp_length = (16 * (skb->len + IEEE80211_FCS_LEN) + rate_500k - 1) /
-		      rate_500k;
+	payload_len_crc = skb->len + IEEE80211_FCS_LEN;
+	plcp_length = (16 * payload_len_crc + rate_500k - 1) / rate_500k;
+	if (rate_500k == 22) {
+		/* OpenBSD rum_setup_tx_desc(): PLCP length extension for 11 Mbps CCK. */
+		remainder = (16 * payload_len_crc) % 22;
+		if (remainder && remainder < 7)
+			desc->plcp_service |= DWR_PLCP_LENGEXT;
+	}
+	if (rate_500k != 2 && short_preamble)
+		desc->plcp_signal |= DWR_PLCP_SHORT_PREAMBLE;
 	desc->plcp_length_lo = plcp_length & 0xff;
 	desc->plcp_length_hi = plcp_length >> 8;
 
@@ -160,6 +175,7 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 	struct dwr_tx_urb_ctx *ctx;
 	struct urb *urb;
 	u8 *buf;
+	size_t xfer_len;
 	int ret;
 	size_t total;
 
@@ -167,12 +183,13 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 	if (!READ_ONCE(dwr->usb.running))
 		return -ENETDOWN;
 
-	ret = dwr_tx_build_desc(skb, &desc);
+	ret = dwr_tx_build_desc(dwr, skb, &desc);
 	if (ret)
 		return ret;
 
 	total = sizeof(desc) + skb->len;
-	buf = kmalloc(total, GFP_ATOMIC);
+	xfer_len = roundup(total, 4);
+	buf = kzalloc(xfer_len, GFP_ATOMIC);
 	if (!buf)
 		return -ENOMEM;
 
@@ -201,7 +218,7 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 
 	usb_fill_bulk_urb(urb, dwr->usb.udev,
 			 usb_sndbulkpipe(dwr->usb.udev, dwr->usb.bulk_out_ep),
-			 buf, total, dwr_tx_complete, ctx);
+			 buf, xfer_len, dwr_tx_complete, ctx);
 	usb_anchor_urb(urb, &dwr->usb.tx_anchor);
 
 	ret = usb_submit_urb(urb, GFP_ATOMIC);

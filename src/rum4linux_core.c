@@ -176,9 +176,6 @@ static int dwr_mac_start(struct ieee80211_hw *hw)
 	ret = dwr_set_macaddr(dwr, dwr->mac_addr);
 	if (ret)
 		return ret;
-	ret = dwr_set_rx_timing_defaults(dwr);
-	if (ret)
-		return ret;
 	ret = dwr_set_rx_filter(dwr, dwr->filter_flags);
 	if (ret)
 		return ret;
@@ -234,12 +231,17 @@ static int dwr_mac_config(struct ieee80211_hw *hw, u32 changed)
 	return 0;
 }
 
+static void dwr_update_assoc_aid(struct dwr_dev *dwr, bool associated, u16 aid)
+{
+	dwr->associated = associated;
+	dwr->aid = associated ? aid : 0;
+}
+
 static void dwr_leave_run_state(struct dwr_dev *dwr, const char *reason)
 {
 	int ret;
 
-	dwr->associated = false;
-	dwr->aid = 0;
+	dwr_update_assoc_aid(dwr, false, 0);
 	WRITE_ONCE(dwr->link_rssi_dbm, DWR_LINK_RSSI_INVALID_DBM);
 	cancel_delayed_work_sync(&dwr->link_tuner_work);
 	ret = dwr_abort_tsf_sync(dwr);
@@ -269,7 +271,11 @@ static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *
 	}
 
 	ret = dwr_set_erp_timing(dwr, info->use_short_preamble,
-				 info->use_short_slot ? 9 : 20, 10, 314);
+				 info->use_short_slot ?
+				 DWR_RT2573_SLOT_TIME_SHORT :
+				 DWR_RT2573_SLOT_TIME_LONG,
+				 DWR_RT2573_MAC_CSR8_SIFS_DEFAULT,
+				 DWR_RT2573_MAC_CSR8_EIFS_DEFAULT);
 	if (ret)
 		dwr_dbg(&dwr->usb.intf->dev, "run enter erp timing failed: %d\n", ret);
 	ret = dwr_set_retry_limits(dwr, short_retry, long_retry, true, 0, true);
@@ -340,9 +346,12 @@ static void dwr_mac_bss_info_changed(struct ieee80211_hw *hw,
 	}
 
 	if (changed & BSS_CHANGED_ASSOC) {
-		dwr->associated = info->assoc;
-		dwr->aid = info->aid;
-		/* TODO(openbsd-rum-port): no confirmed dedicated RT2573 AID register in if_rum.c; keep software AID state only. */
+		dwr_update_assoc_aid(dwr, info->assoc, info->aid);
+		/*
+		 * TODO(openbsd-rum-port): OpenBSD if_rum.c + if_rumreg.h
+		 * expose no confirmed dedicated RT2573 hardware AID register/
+		 * field in this station path; keep software AID state only.
+		 */
 		if (info->assoc)
 			dwr_enter_run_state(dwr, info);
 		else
@@ -361,8 +370,11 @@ static void dwr_mac_bss_info_changed(struct ieee80211_hw *hw,
 	}
 	if (changed & (BSS_CHANGED_ERP_PREAMBLE | BSS_CHANGED_ERP_SLOT)) {
 		ret = dwr_set_erp_timing(dwr, info->use_short_preamble,
-					 info->use_short_slot ? 9 : 20,
-					 10, 314);
+					 info->use_short_slot ?
+					 DWR_RT2573_SLOT_TIME_SHORT :
+					 DWR_RT2573_SLOT_TIME_LONG,
+					 DWR_RT2573_MAC_CSR8_SIFS_DEFAULT,
+					 DWR_RT2573_MAC_CSR8_EIFS_DEFAULT);
 		if (ret)
 			dwr_dbg(&dwr->usb.intf->dev, "set erp timing failed: %d\n", ret);
 	}

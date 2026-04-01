@@ -19,15 +19,38 @@
  * - Exact bit semantics differ across chips/firmware variants; keep uncertain fields guarded.
  */
 #define DWR_RX_DESC_LEN 24
+#define DWR_RXD_W0_BUSY BIT(0)
 #define DWR_RXD_W0_DROP BIT(1)
 #define DWR_RXD_W0_CRC_ERROR BIT(6)
 #define DWR_RXD_W0_OFDM BIT(7)
 #define DWR_RXD_W0_DATABYTE_COUNT_MASK GENMASK(27, 16)
 #define DWR_RXD_W1_SIGNAL_MASK GENMASK(7, 0)
-#define DWR_RXD_W1_RSSI_MASK GENMASK(15, 8)
+#define DWR_RXD_W1_RSSI_AGC_MASK GENMASK(12, 8)
+#define DWR_RXD_W1_RSSI_LNA_MASK GENMASK(14, 13)
 #define DWR_RXD_W1_FRAME_OFFSET_MASK GENMASK(30, 24)
 
 static void dwr_rx_complete(struct urb *urb);
+
+struct dwr_rx_record {
+	int frame_off;
+	int frame_len;
+	int consumed;
+	struct ieee80211_rx_status status;
+};
+
+static bool dwr_rx_has_non_crc_drop_error(u32 word0)
+{
+	bool drop = !!(word0 & DWR_RXD_W0_DROP);
+	bool crc = !!(word0 & DWR_RXD_W0_CRC_ERROR);
+
+	/*
+	 * OpenBSD if_rumreg.h names this bit RT2573_RX_DROP but does not
+	 * define a narrower PLCP/PHY cause, and if_rum.c does not classify it.
+	 * Keep CRC as the only explicit class, and treat DROP as a broader
+	 * non-CRC receive-error class in this narrow path.
+	 */
+	return drop && !crc;
+}
 
 static int dwr_rx_rate_idx(bool ofdm, u8 signal)
 {
@@ -47,29 +70,40 @@ static int dwr_rx_rate_idx(bool ofdm, u8 signal)
 	}
 
 	/*
-	 * TODO(openbsd-rum-port): validate complete OFDM PLCP signal mapping across all rum(4)-family revisions.
-	 * These values align with common rt2x00/rt73 OFDM signal coding.
+	 * Current supported-rate table is intentionally CCK-only in this narrow
+	 * station path. Keep OFDM RX conservative by falling back through the
+	 * unknown-signal path instead of emitting out-of-range rate_idx values.
+	 * TODO(openbsd-rum-port): wire source-backed OFDM RX rate metadata only
+	 * when it can be surfaced without broadening TX-operational claims.
 	 */
-	switch (signal) {
-	case 0xb:
-		return 4;  /* 6 Mbps */
-	case 0xf:
-		return 5;  /* 9 Mbps */
-	case 0xa:
-		return 6;  /* 12 Mbps */
-	case 0xe:
-		return 7;  /* 18 Mbps */
-	case 0x9:
-		return 8;  /* 24 Mbps */
-	case 0xd:
-		return 9;  /* 36 Mbps */
-	case 0x8:
-		return 10; /* 48 Mbps */
-	case 0xc:
-		return 11; /* 54 Mbps */
+	return -EINVAL;
+}
+
+static int dwr_rx_word1_to_rssi_dbm(struct dwr_dev *dwr, u32 word1)
+{
+	u8 agc = FIELD_GET(DWR_RXD_W1_RSSI_AGC_MASK, word1);
+	u8 lna = FIELD_GET(DWR_RXD_W1_RSSI_LNA_MASK, word1);
+	int offset = 0;
+
+	/*
+	 * Linux rt73usb lineage decodes RT2573 RSSI from AGC/LNA fields as:
+	 * rssi = agc * 2 - offset(lna). Keep narrow 2.4GHz conservative shape.
+	 */
+	switch (lna) {
+	case 3:
+		offset = 90;
+		break;
+	case 2:
+		offset = 74;
+		break;
+	case 1:
+		offset = 64;
+		break;
 	default:
-		return -EINVAL;
+		return DWR_LINK_RSSI_INVALID_DBM;
 	}
+
+	return (agc * 2) - offset + dwr->eeprom.rssi_2ghz_corr;
 }
 
 static int dwr_rx_submit_slot(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
@@ -98,49 +132,77 @@ static int dwr_rx_submit_slot(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 }
 
 static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
-			      int actual_len, int *frame_off, int *frame_len,
-			      struct ieee80211_rx_status *status)
+			      const u8 *buf, int avail_len,
+			      struct dwr_rx_record *record)
 {
 	u32 word0, word1;
 	u16 data_len;
 	u8 signal;
-	s8 rssi;
+	int rssi_dbm;
 	u8 frame_offset;
 	int rate_idx;
 	bool ofdm;
+	bool busy;
 	bool crc_error;
-	bool drop_error;
+	bool non_crc_drop_error;
 	bool allow_fcs_fail;
 	bool allow_plcp_fail;
 	int min_total;
 
-	if (actual_len < DWR_RX_DESC_LEN) {
+	if (avail_len < DWR_RX_DESC_LEN) {
 		atomic_inc(&dwr->rx.stats.drop_short);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] short packet len=%d < desc=%u\n",
-			slot->index, actual_len, DWR_RX_DESC_LEN);
+			"rx urb[%u] short record len=%d < desc=%u\n",
+			slot->index, avail_len, DWR_RX_DESC_LEN);
 		return false;
 	}
 
-	word0 = get_unaligned_le32(&slot->buf[0]);
-	word1 = get_unaligned_le32(&slot->buf[4]);
+	word0 = get_unaligned_le32(&buf[0]);
+	word1 = get_unaligned_le32(&buf[4]);
 	data_len = FIELD_GET(DWR_RXD_W0_DATABYTE_COUNT_MASK, word0);
 	signal = FIELD_GET(DWR_RXD_W1_SIGNAL_MASK, word1);
-	rssi = FIELD_GET(DWR_RXD_W1_RSSI_MASK, word1);
+	rssi_dbm = dwr_rx_word1_to_rssi_dbm(dwr, word1);
 	frame_offset = FIELD_GET(DWR_RXD_W1_FRAME_OFFSET_MASK, word1);
 	ofdm = !!(word0 & DWR_RXD_W0_OFDM);
+	busy = !!(word0 & DWR_RXD_W0_BUSY);
 	crc_error = !!(word0 & DWR_RXD_W0_CRC_ERROR);
-	drop_error = !!(word0 & DWR_RXD_W0_DROP);
+	non_crc_drop_error = dwr_rx_has_non_crc_drop_error(word0);
 	allow_fcs_fail = !!(READ_ONCE(dwr->filter_flags) & FIF_FCSFAIL);
 	allow_plcp_fail = !!(READ_ONCE(dwr->filter_flags) & FIF_PLCPFAIL);
 
-	/* TODO(openbsd-rum-port): confirm frame_offset semantics for all rum(4)-family revisions. */
-	min_total = DWR_RX_DESC_LEN + frame_offset + data_len;
-	if (!data_len || min_total > actual_len || min_total > DWR_RX_BUF_SIZE) {
+	/*
+	 * OpenBSD if_rum.c and Linux rt73usb both treat RT2573 RX frame start
+	 * as immediately after the fixed descriptor (24 bytes), without using
+	 * descriptor offset as an additional start adjustment.
+	 * TODO(openbsd-rum-port): confirm non-zero offset semantics across
+	 * broader rum(4)-family variants; current narrow path ignores it.
+	 */
+	if (frame_offset) {
+		dwr_dbg(&dwr->usb.intf->dev,
+			"rx urb[%u] ignoring non-zero frame_offset=%u word1=0x%08x (narrow RT2573 shape)\n",
+			slot->index, frame_offset, word1);
+	}
+
+	min_total = DWR_RX_DESC_LEN + data_len;
+	if (!data_len || min_total > avail_len || min_total > DWR_RX_BUF_SIZE) {
 		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] bad desc len=%d data_len=%u frame_off=%u min_total=%d\n",
-			slot->index, actual_len, data_len, frame_offset, min_total);
+			"rx urb[%u] bad record len=%d data_len=%u min_total=%d\n",
+			slot->index, avail_len, data_len, min_total);
+		return false;
+	}
+	if (busy) {
+		atomic_inc(&dwr->rx.stats.drop_bad_desc);
+		dwr_dbg(&dwr->usb.intf->dev,
+			"rx urb[%u] busy descriptor word0=0x%08x\n",
+			slot->index, word0);
+		return false;
+	}
+	if (data_len < sizeof(struct ieee80211_frame_min)) {
+		atomic_inc(&dwr->rx.stats.drop_bad_desc);
+		dwr_dbg(&dwr->usb.intf->dev,
+			"rx urb[%u] short frame payload data_len=%u (<%zu)\n",
+			slot->index, data_len, sizeof(struct ieee80211_frame_min));
 		return false;
 	}
 
@@ -153,98 +215,124 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	}
 
 	/*
-	 * Linux rt73 descriptor exposes RXD_W0_DROP as a broad drop/error bit.
-	 * For this narrow path, treat it as PLCP/PHY-failure class only when
-	 * FIF_PLCPFAIL requests those frames; broader semantics remain unknown.
-	 * TODO(openbsd-rum-port): confirm all RXD_W0_DROP causes on RT2573.
+	 * RT2573_RX_DROP is source-confirmed as a broad drop bit, but not
+	 * source-confirmed as a pure PLCP or PHY indicator in if_rum.c/reg.h.
+	 * We therefore gate only non-CRC DROP frames with FIF_PLCPFAIL as the
+	 * closest mac80211 failure-policy class for now.
+	 * TODO(openbsd-rum-port): confirm full RT2573 RX_DROP cause taxonomy.
 	 */
-	if (drop_error && !allow_plcp_fail) {
+	if (non_crc_drop_error && !allow_plcp_fail) {
 		atomic_inc(&dwr->rx.stats.drop_failed_plcp_filtered);
 		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] drop failed-PLCP/PHY by filter policy drop=%u crc=%u ofdm=%u signal=%u rssi=%d data_len=%u\n",
+				"rx urb[%u] drop non-CRC descriptor-drop by filter policy drop=%u crc=%u ofdm=%u signal=%u rssi=%d data_len=%u\n",
 			slot->index,
-			drop_error, crc_error,
+			!!(word0 & DWR_RXD_W0_DROP), crc_error,
 				ofdm,
-				signal, rssi, data_len);
+				signal, rssi_dbm, data_len);
 		return false;
 	}
 
 	rate_idx = dwr_rx_rate_idx(ofdm, signal);
 	if (rate_idx < 0) {
-		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] unsupported signal=%u ofdm=%u\n",
+			"rx urb[%u] unknown signal=%u ofdm=%u, falling back to 1Mbps idx=0\n",
 			slot->index, signal, ofdm);
-		return false;
+		/*
+		 * OpenBSD rum_rxrate() falls back to 1 Mbps on unknown signal.
+		 * Keep delivery conservative by avoiding descriptor-drop here.
+		 */
+		rate_idx = 0;
 	}
 
-	*frame_off = DWR_RX_DESC_LEN + frame_offset;
-	/* rt73/rum path reports byte count including FCS; strip it before mac80211 delivery. */
-	if (data_len < IEEE80211_FCS_LEN) {
+	record->frame_off = DWR_RX_DESC_LEN;
+	/*
+	 * OpenBSD if_rum.c uses RX descriptor byte-count directly as frame
+	 * length, and Linux rt73usb also trims skb to RXD_W0_DATABYTE_COUNT
+	 * directly. Keep that shape here and do not subtract FCS bytes.
+	 */
+	if (!data_len) {
 		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		return false;
 	}
-	*frame_len = data_len - IEEE80211_FCS_LEN;
+	record->frame_len = data_len;
+	record->consumed = min_total;
 
-	memset(status, 0, sizeof(*status));
-	status->band = NL80211_BAND_2GHZ;
-	status->signal = rssi + dwr->eeprom.rssi_2ghz_corr;
-	WRITE_ONCE(dwr->link_rssi_dbm, status->signal);
-	status->rate_idx = rate_idx;
-	status->freq = ieee80211_channel_to_frequency(dwr->hw_state.current_channel,
-						      NL80211_BAND_2GHZ);
+	memset(&record->status, 0, sizeof(record->status));
+	record->status.band = NL80211_BAND_2GHZ;
+	record->status.signal = rssi_dbm;
+	WRITE_ONCE(dwr->link_rssi_dbm, record->status.signal);
+	record->status.rate_idx = rate_idx;
+	record->status.freq = ieee80211_channel_to_frequency(dwr->hw_state.current_channel,
+							      NL80211_BAND_2GHZ);
 	if (crc_error)
-		status->flag |= RX_FLAG_FAILED_FCS_CRC;
-	if (drop_error)
-		status->flag |= RX_FLAG_FAILED_PLCP_CRC;
+		record->status.flag |= RX_FLAG_FAILED_FCS_CRC;
+	if (non_crc_drop_error)
+		record->status.flag |= RX_FLAG_FAILED_PLCP_CRC;
 
 	dwr_dbg(&dwr->usb.intf->dev,
 		"rx urb[%u] desc ok word0=0x%08x word1=0x%08x data_len=%u frame_off=%u ofdm=%u signal=%u rssi=%d\n",
 		slot->index, word0, word1, data_len, frame_offset,
-		ofdm, signal, rssi);
+		ofdm, signal, rssi_dbm);
 	return true;
 }
 
 static void dwr_rx_deliver_frame(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 				 int actual_len)
 {
-	struct ieee80211_rx_status status;
+	struct dwr_rx_record record;
 	struct sk_buff *skb;
-	int frame_off;
-	int frame_len;
+	int cursor = 0;
+	int avail_len;
 
-	if (!dwr_rx_parse_desc(dwr, slot, actual_len, &frame_off, &frame_len, &status))
-		return;
+	while (cursor < actual_len) {
+		avail_len = actual_len - cursor;
+		if (avail_len < DWR_RX_DESC_LEN) {
+			atomic_inc(&dwr->rx.stats.drop_short);
+			dwr_dbg(&dwr->usb.intf->dev,
+				"rx urb[%u] trailing bytes len=%d after %d consumed\n",
+				slot->index, avail_len, cursor);
+			break;
+		}
 
-	if (frame_off < 0 || frame_len <= 0 || frame_off + frame_len > actual_len) {
-		atomic_inc(&dwr->rx.stats.drop_bad_desc);
-		return;
-	}
+		if (!dwr_rx_parse_desc(dwr, slot, &slot->buf[cursor], avail_len,
+				       &record))
+			break;
+		if (record.consumed <= 0 ||
+		    record.frame_off < 0 || record.frame_len <= 0 ||
+		    record.frame_off + record.frame_len > record.consumed ||
+		    cursor + record.frame_off + record.frame_len > actual_len) {
+			atomic_inc(&dwr->rx.stats.drop_bad_desc);
+			break;
+		}
 
-	skb = dev_alloc_skb(frame_len + 64);
-	if (!skb) {
-		atomic_inc(&dwr->rx.stats.drop_bad_desc);
-		return;
-	}
+		skb = dev_alloc_skb(record.frame_len + 64);
+		if (!skb) {
+			atomic_inc(&dwr->rx.stats.drop_bad_desc);
+			break;
+		}
 
-	skb_reserve(skb, 2);
-	skb_put_data(skb, &slot->buf[frame_off], frame_len);
-	memcpy(IEEE80211_SKB_RXCB(skb), &status, sizeof(status));
-	if (status.flag & RX_FLAG_FAILED_FCS_CRC) {
-		atomic_inc(&dwr->rx.stats.delivered_failed_fcs);
-		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] delivering failed-FCS frame len=%d\n",
-			slot->index, frame_len);
+		skb_reserve(skb, 2);
+		skb_put_data(skb, &slot->buf[cursor + record.frame_off],
+			     record.frame_len);
+		memcpy(IEEE80211_SKB_RXCB(skb), &record.status, sizeof(record.status));
+		if (record.status.flag & RX_FLAG_FAILED_FCS_CRC) {
+			atomic_inc(&dwr->rx.stats.delivered_failed_fcs);
+			dwr_dbg(&dwr->usb.intf->dev,
+				"rx urb[%u] delivering failed-FCS frame len=%d\n",
+				slot->index, record.frame_len);
+		}
+		if (record.status.flag & RX_FLAG_FAILED_PLCP_CRC) {
+			atomic_inc(&dwr->rx.stats.delivered_failed_plcp);
+			dwr_dbg(&dwr->usb.intf->dev,
+				"rx urb[%u] delivering non-CRC descriptor-drop frame len=%d\n",
+				slot->index, record.frame_len);
+		}
+		ieee80211_rx_irqsafe(dwr->hw, skb);
+		atomic_inc(&dwr->rx.stats.delivered);
+
+		cursor += record.consumed;
 	}
-	if (status.flag & RX_FLAG_FAILED_PLCP_CRC) {
-		atomic_inc(&dwr->rx.stats.delivered_failed_plcp);
-		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] delivering failed-PLCP/PHY frame len=%d\n",
-			slot->index, frame_len);
-	}
-	ieee80211_rx_irqsafe(dwr->hw, skb);
-	atomic_inc(&dwr->rx.stats.delivered);
 }
 
 static void dwr_rx_complete(struct urb *urb)

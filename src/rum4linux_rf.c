@@ -12,6 +12,9 @@ struct dwr_rf_chan_plan {
 	u32 r4;
 };
 
+#define DWR_BBP3_SMART_MODE BIT(0)
+#define DWR_BBP94_DEFAULT   6
+
 /*
  * Confidence source:
  * - Linux rt73usb rf_vals_bg_2528[] channel table (RT2528, 2.4GHz only).
@@ -34,21 +37,56 @@ static const struct dwr_rf_chan_plan dwr_rf2528_2ghz[] = {
 	{ 14, 0x02c0c, 0x007a2, 0x68255, 0xfea13 },
 };
 
-static u8 dwr_rf_txpower_for_chan(struct dwr_dev *dwr, u8 chan)
+struct dwr_chan_txpower {
+	u8 rf_power;
+	u8 bbp94;
+	s8 eeprom_power;
+};
+
+static struct dwr_chan_txpower dwr_rf_txpower_for_chan(struct dwr_dev *dwr, u8 chan)
 {
-	u8 eep = dwr->eeprom.txpow_2ghz[chan - 1];
+	s8 eep = dwr->eeprom.txpow_2ghz[chan - 1];
+	struct dwr_chan_txpower txp = {
+		.rf_power = 0,
+		.bbp94 = DWR_BBP94_DEFAULT,
+		.eeprom_power = eep,
+	};
 
 	/*
 	 * Confidence source:
-	 * - Linux rt73usb: TXPOWER_TO_DEV() clamps 0..31, DEFAULT_TXPOWER is 24.
+	 * - OpenBSD rum_set_chan(): per-channel signed EEPROM power drives RF3
+	 *   (clamped to [0,31]) and adjusts BBP R94 around default 6.
+	 * - Linux rt73usb_config_channel(): applies TXPOWER_TO_DEV(txpower) to RF3
+	 *   and companion BBP R94 adjustment using the same default of 6.
 	 */
-	if (eep <= 31)
-		return eep;
+	if (eep < 0) {
+		if (eep >= -DWR_BBP94_DEFAULT)
+			txp.bbp94 += eep;
+		return txp;
+	}
+	if (eep <= 31) {
+		txp.rf_power = eep;
+		return txp;
+	}
+	txp.rf_power = 31;
+	if (eep <= (31 + DWR_BBP94_DEFAULT))
+		txp.bbp94 += eep - 31;
+	return txp;
+}
 
-	dwr_warn(&dwr->usb.intf->dev,
-		 "rf calib: invalid eeprom txpower[%u]=0x%02x, using default 24\n",
-		 chan, eep);
-	return 24;
+static int dwr_rf_set_chan_bbp(struct dwr_dev *dwr, u8 bbp94)
+{
+	u8 bbp3;
+	int ret;
+
+	ret = dwr_bbp_read(dwr, 3, &bbp3);
+	if (ret)
+		return ret;
+	bbp3 &= ~DWR_BBP3_SMART_MODE;
+	ret = dwr_bbp_write(dwr, 3, bbp3);
+	if (ret)
+		return ret;
+	return dwr_bbp_write(dwr, 94, bbp94);
 }
 
 static int dwr_rf_write(struct dwr_dev *dwr, u8 reg, u32 val)
@@ -82,7 +120,7 @@ int dwr_rf_set_channel_2ghz(struct dwr_dev *dwr, u8 chan)
 	const struct dwr_rf_chan_plan *plan = NULL;
 	u32 verify;
 	u8 bbp3;
-	u8 txpower;
+	struct dwr_chan_txpower txp;
 	int ret;
 	int i;
 	u32 rf3;
@@ -109,9 +147,9 @@ int dwr_rf_set_channel_2ghz(struct dwr_dev *dwr, u8 chan)
 	if (!plan)
 		return -EINVAL;
 
-	txpower = dwr_rf_txpower_for_chan(dwr, chan);
+	txp = dwr_rf_txpower_for_chan(dwr, chan);
 	/* OpenBSD rum(4) uses power << 7 into RF3. */
-	rf3 = (plan->r3 & ~(0x1f << 7)) | (txpower << 7);
+	rf3 = (plan->r3 & ~(0x1f << 7)) | ((u32)txp.rf_power << 7);
 	/* OpenBSD rum(4) uses rffreq << 10 in RF4 value domain. */
 	rf4 = plan->r4 | ((u32)dwr->eeprom.rffreq << 10);
 
@@ -156,6 +194,10 @@ int dwr_rf_set_channel_2ghz(struct dwr_dev *dwr, u8 chan)
 
 	udelay(10);
 
+	ret = dwr_rf_set_chan_bbp(dwr, txp.bbp94);
+	if (ret)
+		return ret;
+
 	/* No direct RF readback path; use PHY_CSR4 + BBP read as access sanity checks. */
 	ret = dwr_read_reg(dwr, DWR_PHY_CSR4, &verify);
 	if (ret)
@@ -165,9 +207,9 @@ int dwr_rf_set_channel_2ghz(struct dwr_dev *dwr, u8 chan)
 		return ret;
 
 	dwr_info(&dwr->usb.intf->dev,
-		 "rf init ok: rf=%u chan=%u txp=%u r1=0x%05x r2=0x%05x r3=0x%05x r4=0x%05x phy_csr4=0x%08x bbp3=0x%02x\n",
-		 dwr->eeprom.rf_rev, chan, txpower, plan->r1, plan->r2, rf3, rf4,
-		 verify, bbp3);
+		 "rf init ok: rf=%u chan=%u txp_eep=%d txp_rf=%u bbp94=%u r1=0x%05x r2=0x%05x r3=0x%05x r4=0x%05x phy_csr4=0x%08x bbp3=0x%02x\n",
+		 dwr->eeprom.rf_rev, chan, txp.eeprom_power, txp.rf_power, txp.bbp94,
+		 plan->r1, plan->r2, rf3, rf4, verify, bbp3);
 	dwr->hw_state.rf_init_ok = true;
 	dwr->hw_state.current_channel = chan;
 	dwr->hw_state.calibration_applied = true;

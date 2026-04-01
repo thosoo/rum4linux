@@ -88,6 +88,13 @@
 #define DWR_MAC_CSR8_SIFS_AFTER_RX_OFDM_MASK GENMASK(15, 8)
 #define DWR_MAC_CSR8_EIFS_MASK GENMASK(31, 16)
 #define DWR_MAC_CSR9_SLOT_TIME_MASK GENMASK(7, 0)
+#define DWR_RT2573_SLOT_TIME_SHORT              9
+#define DWR_RT2573_SLOT_TIME_LONG               20
+#define DWR_RT2573_MAC_CSR8_SIFS_DEFAULT        10
+#define DWR_RT2573_MAC_CSR8_SIFS_OFDM_DEFAULT   3
+#define DWR_RT2573_MAC_CSR8_EIFS_DEFAULT        0x016c
+#define DWR_RT2573_TXRX_CSR0_ACK_TIMEOUT_DEFAULT 0x32
+#define DWR_RT2573_TXRX_CSR0_TSF_OFFSET_DEFAULT 24
 #define DWR_BSSID_ONE_MODE 3
 #define DWR_STA_CSR0_FCS_ERROR_MASK GENMASK(15, 0)
 #define DWR_STA_CSR0_PLCP_ERROR_MASK GENMASK(31, 16)
@@ -143,6 +150,9 @@
 #define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_PATTERN_INVALID 15
 #define DWR_CHAN_APPLY_ORIGIN_UNKNOWN                     16
 #define DWR_CHAN_APPLY_ORIGIN_MAX                         17
+#define DWR_CHAN_APPLY_DELTA_SANITY_MISSING              0
+#define DWR_CHAN_APPLY_DELTA_SANITY_SAME                 1
+#define DWR_CHAN_APPLY_DELTA_SANITY_CHANGED              2
 
 struct dwr_eeprom_bbp_word {
 	u8 reg;
@@ -163,7 +173,7 @@ struct dwr_eeprom_info {
 	u8 rffreq;
 	s8 rssi_2ghz_corr;
 	s8 rssi_5ghz_corr;
-	u8 txpow_2ghz[DWR_EEPROM_TXPOWER_CHANS_2G];
+	s8 txpow_2ghz[DWR_EEPROM_TXPOWER_CHANS_2G];
 	struct dwr_eeprom_bbp_word bbp_prom[DWR_EEPROM_BBP_PROM_ENTRIES];
 
 	/* TODO(openbsd-rum-port): map additional EEPROM words once confirmed. */
@@ -222,6 +232,18 @@ struct dwr_hw_state {
 	u32 last_channel_apply_failure_phy_csr4;
 	u8 last_channel_apply_failure_bbp0;
 	u8 last_channel_apply_failure_bbp3;
+	bool last_channel_apply_failure_delta_valid;
+	bool last_channel_apply_failure_delta_prev_valid;
+	bool last_channel_apply_failure_delta_runtime_same;
+	bool last_channel_apply_failure_delta_channel_same;
+	bool last_channel_apply_failure_delta_stage_same;
+	bool last_channel_apply_failure_delta_errclass_same;
+	bool last_channel_apply_failure_delta_origin_same;
+	bool last_channel_apply_failure_delta_errno_same;
+	u8 last_channel_apply_failure_delta_mac_csr0_state;
+	u8 last_channel_apply_failure_delta_phy_csr4_state;
+	u8 last_channel_apply_failure_delta_bbp0_state;
+	u8 last_channel_apply_failure_delta_bbp3_state;
 };
 
 struct dwr_usb_state {

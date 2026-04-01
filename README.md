@@ -26,6 +26,7 @@ Implemented scaffold pieces:
 - channel-apply diagnostics now include conservative error-class buckets (invalid/unsupported/timeout/io/sanity/unknown) derived from stage+errno for faster field triage
 - channel-apply diagnostics now also include conservative error-origin attribution (bbp_profile/rf_set/sanity-read/sanity-pattern and recovery equivalents) with per-origin counters
 - origin counters are failure-attribution-only (not stage-visit counters), and channel summaries now include one compact preserved last-failure snapshot with any captured sanity values
+- channel-apply failure diagnostics now also retain a bounded delta snapshot (latest failure vs previous retained failure) covering runtime/init, channel/stage/class/origin/errno, and compact sanity-read value state (missing/same/changed)
 - probe-time EEPROM MAC adoption for mac80211/hardware identity coherence (random fallback only on EEPROM failure)
 - RUN-state sequencing now mirrors OpenBSD rum(4) ordering for channel/slot/MRR/preamble/basic-rates/BSSID/TSF sync and aborts TSF sync on RUN exit
 - conservative TX retry-limit/fallback plumbing now programs confirmed TXRX_CSR4 fields; TX status still avoids claiming ACK success without hardware feedback
@@ -35,13 +36,27 @@ Implemented scaffold pieces:
 - conservative BBP17/VGC tuner added for the narrow associated station path using source-backed RSSI/FCS/false-CCA inputs (false_cca > 512 raises gain, < 100 lowers gain within guarded bounds)
 - BBP17 tuner now keys off the current 2.4GHz base profile value instead of a hardcoded 0x20 baseline
 - RX software delivery is now coherent with configured FIF_FCSFAIL / FIF_PLCPFAIL policy: allowed failed frames are delivered with mac80211 failure flags and counted separately
+- RX descriptor failure taxonomy is now slightly tightened for the narrow RT2573 path: explicit CRC bit remains failed-FCS, while `RXD_W0_DROP` is treated as a broader non-CRC descriptor-drop class (not claimed as pure PLCP/PHY), still gated via `FIF_PLCPFAIL` as the closest mac80211 policy hook
+- RX framing now follows source-backed RT2573/rt73 shape more closely: descriptor byte-count is used directly as frame length (no unconditional FCS subtraction), and frame start is fixed at descriptor end (24-byte descriptor); non-zero descriptor frame-offset is currently ignored in the narrow path (TODO-scoped for broader variants)
+- RX signal decode now avoids dropping frames solely on unknown descriptor signal values: it falls back to 1 Mbps index (OpenBSD `rum_rxrate()` fallback shape) and keeps delivery conservative
+- RX RSSI metadata now follows rt73/RT2573 AGC+LNA decode shape (instead of raw byte use), improving signal/link-tuner inputs in the active narrow station path
+- RX rate metadata is now kept coherent with the CCK-only supported-rate table: OFDM RX frames are delivered with conservative 1 Mbps fallback metadata instead of out-of-range OFDM rate indexes
+- CCK TX descriptor PLCP fields now mirror OpenBSD `rum_setup_tx_desc()` edge behavior for this narrow path: 11 Mbps `PLCP_LENGEXT` handling and short-preamble signal-bit application when configured
+- TX bulk-OUT transfer length is now 4-byte padded (descriptor+frame rounded up), matching OpenBSD `rum_tx_data()` transfer-shape handling for RT2573
+- RX descriptor parsing now drops BUSY-marked descriptors and payloads shorter than `ieee80211_frame_min`, mirroring conservative OpenBSD receive gating before frame delivery
+- RX bulk-IN handling now walks bounded descriptor+frame records inside one URB buffer, delivering valid earlier records in order and stopping conservatively at malformed/trailing data
+- narrow station timing defaults are now tightened to OpenBSD-backed RT2573 values in the current path: slot 9/20us, SIFS 10us, OFDM-SIFS 3us, EIFS 0x016c, RX_ACK_TIMEOUT 0x32, TSF_OFFSET 24
+- RT2573 RX timing defaults are now applied directly in hardware init (`dwr_hw_init`) for the active narrow path, rather than only from mac80211 start call-site wiring
+- STA TSF sync programming now explicitly mirrors OpenBSD `rum_enable_tsf_sync()` shape by preserving TXRX_CSR9 timestamp-compensation bits [31:24] and rebuilding the low TSF-control bits from scratch (interval + TSF mode/ticking/TBTT in STA mode)
+- TXRX_CSR9 timestamp-compensation high-byte value itself remains unresolved for this narrow path; current code preserves existing hardware/default value (`TODO(openbsd-rum-port)`) instead of inventing a constant
+- hardware AID programming is still unresolved: primary-source review of OpenBSD `if_rum.c` + `if_rumreg.h` did not confirm a dedicated RT2573 station-path AID register/field, so AID remains software-tracked only (`TODO(openbsd-rum-port)`)
 
 Still intentionally incomplete:
 
 - full, validated TX descriptor/status semantics across `rum(4)`-family variants
 - OFDM TX descriptor/status support is still deferred; OFDM rates may be RX-decoded but are not advertised as TX-operational in this narrow station path
 - full RX descriptor confidence across all rum(4)-family variants
-- full confirmation of all RT2573 RXD_W0_DROP causes remains TODO(openbsd-rum-port); current mapping treats it as PLCP/PHY-failure class only for narrow filter coherence
+- full confirmation of all RT2573 RXD_W0_DROP causes remains TODO(openbsd-rum-port); current mapping is narrowed to “non-CRC descriptor-drop” and only uses PLCP-failure policy/flag as a conservative proxy
 - association / operational station behavior
 - broad USB ID and per-device calibration/firmware coverage
 
