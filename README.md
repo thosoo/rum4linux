@@ -29,6 +29,7 @@ Implemented scaffold pieces:
 - channel-apply failure diagnostics now also retain a bounded delta snapshot (latest failure vs previous retained failure) covering runtime/init, channel/stage/class/origin/errno, and compact sanity-read value state (missing/same/changed)
 - probe-time EEPROM MAC adoption for mac80211/hardware identity coherence (random fallback only on EEPROM failure)
 - RUN-state sequencing now mirrors OpenBSD rum(4) ordering for channel/slot/MRR/preamble/basic-rates/BSSID/TSF sync and aborts TSF sync on RUN exit
+- RUN entry now gates TSF-sync enablement on both a valid BSSID and non-zero beacon interval; otherwise it conservatively clears/keeps TSF sync aborted instead of programming a zero-interval sync state
 - conservative TX retry-limit/fallback plumbing now programs confirmed TXRX_CSR4 fields; TX status still avoids claiming ACK success without hardware feedback
 - no confirmed host-visible RT2573 per-frame TX ACK/retry result ingestion path is wired yet; tx status remains transport-completion-limited
 - RX CCK rate decoding now follows source-backed raw 100kbps descriptor values (10/20/55/110) instead of low-bit masking

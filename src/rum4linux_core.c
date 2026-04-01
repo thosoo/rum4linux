@@ -257,6 +257,8 @@ static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *
 	struct ieee80211_channel *chan = dwr->hw->conf.chandef.chan;
 	u8 short_retry = dwr->hw->conf.short_frame_max_tx_count;
 	u8 long_retry = dwr->hw->conf.long_frame_max_tx_count;
+	bool have_valid_bssid = is_valid_ether_addr(info->bssid);
+	bool enable_tsf = have_valid_bssid && info->beacon_int;
 	int ret;
 
 	if (!short_retry)
@@ -284,12 +286,31 @@ static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *
 	ret = dwr_set_basic_rates(dwr, info->basic_rates);
 	if (ret)
 		dwr_dbg(&dwr->usb.intf->dev, "run enter basic rates failed: %d\n", ret);
-	ret = dwr_set_bssid(dwr, info->bssid);
-	if (ret)
-		dwr_dbg(&dwr->usb.intf->dev, "run enter bssid failed: %d\n", ret);
-	ret = dwr_set_tsf_sync(dwr, true, info->beacon_int);
-	if (ret)
-		dwr_dbg(&dwr->usb.intf->dev, "run enter tsf sync failed: %d\n", ret);
+	if (have_valid_bssid) {
+		ret = dwr_set_bssid(dwr, info->bssid);
+		if (ret)
+			dwr_dbg(&dwr->usb.intf->dev, "run enter bssid failed: %d\n", ret);
+	} else {
+		ret = dwr_clear_bssid(dwr);
+		if (ret)
+			dwr_dbg(&dwr->usb.intf->dev,
+				"run enter clear invalid bssid failed: %d\n", ret);
+	}
+
+	if (!enable_tsf) {
+		ret = dwr_abort_tsf_sync(dwr);
+		if (ret)
+			dwr_dbg(&dwr->usb.intf->dev, "run enter abort tsf sync failed: %d\n", ret);
+		/*
+		 * OpenBSD rum_enable_tsf_sync() consumes station BSS interval.
+		 * TODO(openbsd-rum-port): confirm whether zero beacon interval
+		 * should be tolerated differently on RT2573.
+		 */
+	} else {
+		ret = dwr_set_tsf_sync(dwr, true, info->beacon_int);
+		if (ret)
+			dwr_dbg(&dwr->usb.intf->dev, "run enter tsf sync failed: %d\n", ret);
+	}
 	ret = dwr_set_vgc(dwr, dwr->bbp17_base);
 	if (ret)
 		dwr_dbg(&dwr->usb.intf->dev, "run enter set vgc failed: %d\n", ret);
@@ -359,7 +380,8 @@ static void dwr_mac_bss_info_changed(struct ieee80211_hw *hw,
 		/* TODO(openbsd-rum-port): program association-related timing/state registers once confirmed from if_rum.c. */
 	}
 	if (changed & BSS_CHANGED_BEACON_INT) {
-		ret = dwr_set_tsf_sync(dwr, dwr->associated, info->beacon_int);
+		ret = dwr_set_tsf_sync(dwr, dwr->associated && info->beacon_int,
+				       info->beacon_int);
 		if (ret)
 			dwr_dbg(&dwr->usb.intf->dev, "set beacon interval failed: %d\n", ret);
 	}

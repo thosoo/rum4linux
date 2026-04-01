@@ -49,8 +49,9 @@ This is a structural generalization pass, not a claim of broad functional enable
   - RX filter programming via TXRX_CSR0 from mac80211 filter flags
   - TSF/basic-rates/ERP runtime programming via TXRX_CSR4/5/9 and MAC_CSR8/9
   - EEPROM MAC used as primary station identity at probe (random fallback only if EEPROM parse fails)
-  - RUN transition ordering aligned to if_rum.c for station path (channel -> slot/ERP -> MRR -> rates -> BSSID -> TSF sync)
-  - explicit TSF-sync abort on RUN exit by clearing TXRX_CSR9 low 24 bits
+- RUN transition ordering aligned to if_rum.c for station path (channel -> slot/ERP -> MRR -> rates -> BSSID -> TSF sync)
+- explicit TSF-sync abort on RUN exit by clearing TXRX_CSR9 low 24 bits
+- RUN-entry TSF enable now requires both valid station BSSID and non-zero beacon interval; otherwise code conservatively aborts TSF sync instead of issuing a zero-interval enable sequence
   - conservative TX retry-limit/fallback programming via TXRX_CSR4 (OpenBSD MRR naming and rt73usb OFDM-down/fallback naming treated as aliases for shared bits)
   - TX status reports attempted rate/count but does not claim ACK success without hardware feedback
   - OpenBSD rum(4) path exposes USB completion for TX but no host-visible per-frame ACK/retry result; current Linux port keeps that limitation explicit
