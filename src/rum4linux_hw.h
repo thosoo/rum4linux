@@ -173,7 +173,7 @@ struct dwr_eeprom_info {
 	u8 rffreq;
 	s8 rssi_2ghz_corr;
 	s8 rssi_5ghz_corr;
-	u8 txpow_2ghz[DWR_EEPROM_TXPOWER_CHANS_2G];
+	s8 txpow_2ghz[DWR_EEPROM_TXPOWER_CHANS_2G];
 	struct dwr_eeprom_bbp_word bbp_prom[DWR_EEPROM_BBP_PROM_ENTRIES];
 
 	/* TODO(openbsd-rum-port): map additional EEPROM words once confirmed. */
