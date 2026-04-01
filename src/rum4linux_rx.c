@@ -153,14 +153,12 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	 * as immediately after the fixed descriptor (24 bytes), without using
 	 * descriptor offset as an additional start adjustment.
 	 * TODO(openbsd-rum-port): confirm non-zero offset semantics across
-	 * broader rum(4)-family variants before relaxing this guard.
+	 * broader rum(4)-family variants; current narrow path ignores it.
 	 */
 	if (frame_offset) {
-		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] unsupported non-zero frame_offset=%u word1=0x%08x\n",
+			"rx urb[%u] ignoring non-zero frame_offset=%u word1=0x%08x (narrow RT2573 shape)\n",
 			slot->index, frame_offset, word1);
-		return false;
 	}
 
 	min_total = DWR_RX_DESC_LEN + data_len;

@@ -96,7 +96,7 @@ Current RX descriptor assumptions are intentionally narrow and source-backed:
 - `word1` signal/rssi/frame-offset extraction pattern from Linux `rt73usb`.
 - OpenBSD `if_rum.c` framing model (USB payload includes descriptor metadata plus frame body).
 - RT2573/rt73 receive paths use descriptor byte-count directly for frame length; this narrow port now mirrors that (no unconditional FCS subtraction from RXD byte-count).
-- OpenBSD `if_rum.c` and Linux rt73usb both treat frame start as immediately after the fixed 24-byte RX descriptor; this narrow port now mirrors that and conservatively drops non-zero descriptor frame-offset until broader semantics are source-confirmed.
+- OpenBSD `if_rum.c` and Linux rt73usb both treat frame start as immediately after the fixed 24-byte RX descriptor; this narrow port now mirrors that and ignores non-zero descriptor frame-offset for narrow RT2573 behavior while keeping broader semantics TODO-scoped.
 - OpenBSD `rum_rxrate()` fallback behavior returns 1 Mbps-equivalent on unknown signal; this narrow port now mirrors that conservatively by falling back to CCK idx 0 instead of dropping frames solely due to unknown descriptor signal value.
 
 Any broader bit semantics or per-revision behavior remain `TODO(openbsd-rum-port)`.
