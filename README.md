@@ -26,6 +26,7 @@ Implemented scaffold pieces:
 - channel-apply diagnostics now include conservative error-class buckets (invalid/unsupported/timeout/io/sanity/unknown) derived from stage+errno for faster field triage
 - channel-apply diagnostics now also include conservative error-origin attribution (bbp_profile/rf_set/sanity-read/sanity-pattern and recovery equivalents) with per-origin counters
 - origin counters are failure-attribution-only (not stage-visit counters), and channel summaries now include one compact preserved last-failure snapshot with any captured sanity values
+- channel-apply failure diagnostics now also retain a bounded delta snapshot (latest failure vs previous retained failure) covering runtime/init, channel/stage/class/origin/errno, and compact sanity-read value state (missing/same/changed)
 - probe-time EEPROM MAC adoption for mac80211/hardware identity coherence (random fallback only on EEPROM failure)
 - RUN-state sequencing now mirrors OpenBSD rum(4) ordering for channel/slot/MRR/preamble/basic-rates/BSSID/TSF sync and aborts TSF sync on RUN exit
 - conservative TX retry-limit/fallback plumbing now programs confirmed TXRX_CSR4 fields; TX status still avoids claiming ACK success without hardware feedback

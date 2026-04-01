@@ -143,6 +143,9 @@
 #define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_PATTERN_INVALID 15
 #define DWR_CHAN_APPLY_ORIGIN_UNKNOWN                     16
 #define DWR_CHAN_APPLY_ORIGIN_MAX                         17
+#define DWR_CHAN_APPLY_DELTA_SANITY_MISSING              0
+#define DWR_CHAN_APPLY_DELTA_SANITY_SAME                 1
+#define DWR_CHAN_APPLY_DELTA_SANITY_CHANGED              2
 
 struct dwr_eeprom_bbp_word {
 	u8 reg;
@@ -222,6 +225,18 @@ struct dwr_hw_state {
 	u32 last_channel_apply_failure_phy_csr4;
 	u8 last_channel_apply_failure_bbp0;
 	u8 last_channel_apply_failure_bbp3;
+	bool last_channel_apply_failure_delta_valid;
+	bool last_channel_apply_failure_delta_prev_valid;
+	bool last_channel_apply_failure_delta_runtime_same;
+	bool last_channel_apply_failure_delta_channel_same;
+	bool last_channel_apply_failure_delta_stage_same;
+	bool last_channel_apply_failure_delta_errclass_same;
+	bool last_channel_apply_failure_delta_origin_same;
+	bool last_channel_apply_failure_delta_errno_same;
+	u8 last_channel_apply_failure_delta_mac_csr0_state;
+	u8 last_channel_apply_failure_delta_phy_csr4_state;
+	u8 last_channel_apply_failure_delta_bbp0_state;
+	u8 last_channel_apply_failure_delta_bbp3_state;
 };
 
 struct dwr_usb_state {
