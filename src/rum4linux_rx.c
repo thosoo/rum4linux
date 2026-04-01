@@ -24,7 +24,8 @@
 #define DWR_RXD_W0_OFDM BIT(7)
 #define DWR_RXD_W0_DATABYTE_COUNT_MASK GENMASK(27, 16)
 #define DWR_RXD_W1_SIGNAL_MASK GENMASK(7, 0)
-#define DWR_RXD_W1_RSSI_MASK GENMASK(15, 8)
+#define DWR_RXD_W1_RSSI_AGC_MASK GENMASK(12, 8)
+#define DWR_RXD_W1_RSSI_LNA_MASK GENMASK(14, 13)
 #define DWR_RXD_W1_FRAME_OFFSET_MASK GENMASK(30, 24)
 
 static void dwr_rx_complete(struct urb *urb);
@@ -86,6 +87,33 @@ static int dwr_rx_rate_idx(bool ofdm, u8 signal)
 	}
 }
 
+static int dwr_rx_word1_to_rssi_dbm(struct dwr_dev *dwr, u32 word1)
+{
+	u8 agc = FIELD_GET(DWR_RXD_W1_RSSI_AGC_MASK, word1);
+	u8 lna = FIELD_GET(DWR_RXD_W1_RSSI_LNA_MASK, word1);
+	int offset = 0;
+
+	/*
+	 * Linux rt73usb lineage decodes RT2573 RSSI from AGC/LNA fields as:
+	 * rssi = agc * 2 - offset(lna). Keep narrow 2.4GHz conservative shape.
+	 */
+	switch (lna) {
+	case 3:
+		offset = 90;
+		break;
+	case 2:
+		offset = 74;
+		break;
+	case 1:
+		offset = 64;
+		break;
+	default:
+		return DWR_LINK_RSSI_INVALID_DBM;
+	}
+
+	return (agc * 2) - offset + dwr->eeprom.rssi_2ghz_corr;
+}
+
 static int dwr_rx_submit_slot(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 			      gfp_t gfp, bool resubmit)
 {
@@ -118,7 +146,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	u32 word0, word1;
 	u16 data_len;
 	u8 signal;
-	s8 rssi;
+	int rssi_dbm;
 	u8 frame_offset;
 	int rate_idx;
 	bool ofdm;
@@ -140,7 +168,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	word1 = get_unaligned_le32(&slot->buf[4]);
 	data_len = FIELD_GET(DWR_RXD_W0_DATABYTE_COUNT_MASK, word0);
 	signal = FIELD_GET(DWR_RXD_W1_SIGNAL_MASK, word1);
-	rssi = FIELD_GET(DWR_RXD_W1_RSSI_MASK, word1);
+	rssi_dbm = dwr_rx_word1_to_rssi_dbm(dwr, word1);
 	frame_offset = FIELD_GET(DWR_RXD_W1_FRAME_OFFSET_MASK, word1);
 	ofdm = !!(word0 & DWR_RXD_W0_OFDM);
 	crc_error = !!(word0 & DWR_RXD_W0_CRC_ERROR);
@@ -189,11 +217,11 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 		atomic_inc(&dwr->rx.stats.drop_failed_plcp_filtered);
 		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] drop non-CRC descriptor-drop by filter policy drop=%u crc=%u ofdm=%u signal=%u rssi=%d data_len=%u\n",
+				"rx urb[%u] drop non-CRC descriptor-drop by filter policy drop=%u crc=%u ofdm=%u signal=%u rssi=%d data_len=%u\n",
 			slot->index,
 			!!(word0 & DWR_RXD_W0_DROP), crc_error,
 				ofdm,
-				signal, rssi, data_len);
+				signal, rssi_dbm, data_len);
 		return false;
 	}
 
@@ -223,7 +251,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 
 	memset(status, 0, sizeof(*status));
 	status->band = NL80211_BAND_2GHZ;
-	status->signal = rssi + dwr->eeprom.rssi_2ghz_corr;
+	status->signal = rssi_dbm;
 	WRITE_ONCE(dwr->link_rssi_dbm, status->signal);
 	status->rate_idx = rate_idx;
 	status->freq = ieee80211_channel_to_frequency(dwr->hw_state.current_channel,
@@ -236,7 +264,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	dwr_dbg(&dwr->usb.intf->dev,
 		"rx urb[%u] desc ok word0=0x%08x word1=0x%08x data_len=%u frame_off=%u ofdm=%u signal=%u rssi=%d\n",
 		slot->index, word0, word1, data_len, frame_offset,
-		ofdm, signal, rssi);
+		ofdm, signal, rssi_dbm);
 	return true;
 }
 
