@@ -19,6 +19,7 @@
  * - Exact bit semantics differ across chips/firmware variants; keep uncertain fields guarded.
  */
 #define DWR_RX_DESC_LEN 24
+#define DWR_RXD_W0_BUSY BIT(0)
 #define DWR_RXD_W0_DROP BIT(1)
 #define DWR_RXD_W0_CRC_ERROR BIT(6)
 #define DWR_RXD_W0_OFDM BIT(7)
@@ -150,6 +151,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	u8 frame_offset;
 	int rate_idx;
 	bool ofdm;
+	bool busy;
 	bool crc_error;
 	bool non_crc_drop_error;
 	bool allow_fcs_fail;
@@ -171,6 +173,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	rssi_dbm = dwr_rx_word1_to_rssi_dbm(dwr, word1);
 	frame_offset = FIELD_GET(DWR_RXD_W1_FRAME_OFFSET_MASK, word1);
 	ofdm = !!(word0 & DWR_RXD_W0_OFDM);
+	busy = !!(word0 & DWR_RXD_W0_BUSY);
 	crc_error = !!(word0 & DWR_RXD_W0_CRC_ERROR);
 	non_crc_drop_error = dwr_rx_has_non_crc_drop_error(word0);
 	allow_fcs_fail = !!(READ_ONCE(dwr->filter_flags) & FIF_FCSFAIL);
@@ -195,6 +198,20 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 		dwr_dbg(&dwr->usb.intf->dev,
 			"rx urb[%u] bad desc len=%d data_len=%u min_total=%d\n",
 			slot->index, actual_len, data_len, min_total);
+		return false;
+	}
+	if (busy) {
+		atomic_inc(&dwr->rx.stats.drop_bad_desc);
+		dwr_dbg(&dwr->usb.intf->dev,
+			"rx urb[%u] busy descriptor word0=0x%08x\n",
+			slot->index, word0);
+		return false;
+	}
+	if (data_len < sizeof(struct ieee80211_frame_min)) {
+		atomic_inc(&dwr->rx.stats.drop_bad_desc);
+		dwr_dbg(&dwr->usb.intf->dev,
+			"rx urb[%u] short frame payload data_len=%u (<%zu)\n",
+			slot->index, data_len, sizeof(struct ieee80211_frame_min));
 		return false;
 	}
 

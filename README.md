@@ -42,6 +42,7 @@ Implemented scaffold pieces:
 - RX RSSI metadata now follows rt73/RT2573 AGC+LNA decode shape (instead of raw byte use), improving signal/link-tuner inputs in the active narrow station path
 - CCK TX descriptor PLCP fields now mirror OpenBSD `rum_setup_tx_desc()` edge behavior for this narrow path: 11 Mbps `PLCP_LENGEXT` handling and short-preamble signal-bit application when configured
 - TX bulk-OUT transfer length is now 4-byte padded (descriptor+frame rounded up), matching OpenBSD `rum_tx_data()` transfer-shape handling for RT2573
+- RX descriptor parsing now drops BUSY-marked descriptors and payloads shorter than `ieee80211_frame_min`, mirroring conservative OpenBSD receive gating before frame delivery
 - narrow station timing defaults are now tightened to OpenBSD-backed RT2573 values in the current path: slot 9/20us, SIFS 10us, OFDM-SIFS 3us, EIFS 0x016c, RX_ACK_TIMEOUT 0x32, TSF_OFFSET 24
 - RT2573 RX timing defaults are now applied directly in hardware init (`dwr_hw_init`) for the active narrow path, rather than only from mac80211 start call-site wiring
 - STA TSF sync programming now explicitly mirrors OpenBSD `rum_enable_tsf_sync()` shape by preserving TXRX_CSR9 timestamp-compensation bits [31:24] and rebuilding the low TSF-control bits from scratch (interval + TSF mode/ticking/TBTT in STA mode)
