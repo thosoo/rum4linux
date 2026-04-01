@@ -102,6 +102,7 @@ Current RX descriptor assumptions are intentionally narrow and source-backed:
 - CCK TX PLCP programming now mirrors OpenBSD `rum_setup_tx_desc()` details for the narrow path: 11 Mbps `PLCP_LENGEXT` service-bit handling and short-preamble signal-bit application when short preamble is configured.
 - TX bulk submissions now round descriptor+frame transfer length to a 4-byte boundary, mirroring OpenBSD `rum_tx_data()` xfer length shaping.
 - RX parser now mirrors OpenBSD-style conservative gating on receive completion by rejecting BUSY descriptors and descriptor payload lengths shorter than `ieee80211_frame_min` before delivery.
+- RX bulk completion now uses a bounded cursor walker over URB payload to process multiple descriptor+frame records conservatively when present; valid earlier records are delivered before stopping on malformed/trailing data.
 
 Any broader bit semantics or per-revision behavior remain `TODO(openbsd-rum-port)`.
 

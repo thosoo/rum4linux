@@ -31,6 +31,13 @@
 
 static void dwr_rx_complete(struct urb *urb);
 
+struct dwr_rx_record {
+	int frame_off;
+	int frame_len;
+	int consumed;
+	struct ieee80211_rx_status status;
+};
+
 static bool dwr_rx_has_non_crc_drop_error(u32 word0)
 {
 	bool drop = !!(word0 & DWR_RXD_W0_DROP);
@@ -125,8 +132,8 @@ static int dwr_rx_submit_slot(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 }
 
 static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
-			      int actual_len, int *frame_off, int *frame_len,
-			      struct ieee80211_rx_status *status)
+			      const u8 *buf, int avail_len,
+			      struct dwr_rx_record *record)
 {
 	u32 word0, word1;
 	u16 data_len;
@@ -142,16 +149,16 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	bool allow_plcp_fail;
 	int min_total;
 
-	if (actual_len < DWR_RX_DESC_LEN) {
+	if (avail_len < DWR_RX_DESC_LEN) {
 		atomic_inc(&dwr->rx.stats.drop_short);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] short packet len=%d < desc=%u\n",
-			slot->index, actual_len, DWR_RX_DESC_LEN);
+			"rx urb[%u] short record len=%d < desc=%u\n",
+			slot->index, avail_len, DWR_RX_DESC_LEN);
 		return false;
 	}
 
-	word0 = get_unaligned_le32(&slot->buf[0]);
-	word1 = get_unaligned_le32(&slot->buf[4]);
+	word0 = get_unaligned_le32(&buf[0]);
+	word1 = get_unaligned_le32(&buf[4]);
 	data_len = FIELD_GET(DWR_RXD_W0_DATABYTE_COUNT_MASK, word0);
 	signal = FIELD_GET(DWR_RXD_W1_SIGNAL_MASK, word1);
 	rssi_dbm = dwr_rx_word1_to_rssi_dbm(dwr, word1);
@@ -177,11 +184,11 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	}
 
 	min_total = DWR_RX_DESC_LEN + data_len;
-	if (!data_len || min_total > actual_len || min_total > DWR_RX_BUF_SIZE) {
+	if (!data_len || min_total > avail_len || min_total > DWR_RX_BUF_SIZE) {
 		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] bad desc len=%d data_len=%u min_total=%d\n",
-			slot->index, actual_len, data_len, min_total);
+			"rx urb[%u] bad record len=%d data_len=%u min_total=%d\n",
+			slot->index, avail_len, data_len, min_total);
 		return false;
 	}
 	if (busy) {
@@ -238,7 +245,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 		rate_idx = 0;
 	}
 
-	*frame_off = DWR_RX_DESC_LEN;
+	record->frame_off = DWR_RX_DESC_LEN;
 	/*
 	 * OpenBSD if_rum.c uses RX descriptor byte-count directly as frame
 	 * length, and Linux rt73usb also trims skb to RXD_W0_DATABYTE_COUNT
@@ -248,19 +255,20 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		return false;
 	}
-	*frame_len = data_len;
+	record->frame_len = data_len;
+	record->consumed = min_total;
 
-	memset(status, 0, sizeof(*status));
-	status->band = NL80211_BAND_2GHZ;
-	status->signal = rssi_dbm;
-	WRITE_ONCE(dwr->link_rssi_dbm, status->signal);
-	status->rate_idx = rate_idx;
-	status->freq = ieee80211_channel_to_frequency(dwr->hw_state.current_channel,
-						      NL80211_BAND_2GHZ);
+	memset(&record->status, 0, sizeof(record->status));
+	record->status.band = NL80211_BAND_2GHZ;
+	record->status.signal = rssi_dbm;
+	WRITE_ONCE(dwr->link_rssi_dbm, record->status.signal);
+	record->status.rate_idx = rate_idx;
+	record->status.freq = ieee80211_channel_to_frequency(dwr->hw_state.current_channel,
+							      NL80211_BAND_2GHZ);
 	if (crc_error)
-		status->flag |= RX_FLAG_FAILED_FCS_CRC;
+		record->status.flag |= RX_FLAG_FAILED_FCS_CRC;
 	if (non_crc_drop_error)
-		status->flag |= RX_FLAG_FAILED_PLCP_CRC;
+		record->status.flag |= RX_FLAG_FAILED_PLCP_CRC;
 
 	dwr_dbg(&dwr->usb.intf->dev,
 		"rx urb[%u] desc ok word0=0x%08x word1=0x%08x data_len=%u frame_off=%u ofdm=%u signal=%u rssi=%d\n",
@@ -272,42 +280,59 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 static void dwr_rx_deliver_frame(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 				 int actual_len)
 {
-	struct ieee80211_rx_status status;
+	struct dwr_rx_record record;
 	struct sk_buff *skb;
-	int frame_off;
-	int frame_len;
+	int cursor = 0;
+	int avail_len;
 
-	if (!dwr_rx_parse_desc(dwr, slot, actual_len, &frame_off, &frame_len, &status))
-		return;
+	while (cursor < actual_len) {
+		avail_len = actual_len - cursor;
+		if (avail_len < DWR_RX_DESC_LEN) {
+			atomic_inc(&dwr->rx.stats.drop_short);
+			dwr_dbg(&dwr->usb.intf->dev,
+				"rx urb[%u] trailing bytes len=%d after %d consumed\n",
+				slot->index, avail_len, cursor);
+			break;
+		}
 
-	if (frame_off < 0 || frame_len <= 0 || frame_off + frame_len > actual_len) {
-		atomic_inc(&dwr->rx.stats.drop_bad_desc);
-		return;
-	}
+		if (!dwr_rx_parse_desc(dwr, slot, &slot->buf[cursor], avail_len,
+				       &record))
+			break;
+		if (record.consumed <= 0 ||
+		    record.frame_off < 0 || record.frame_len <= 0 ||
+		    record.frame_off + record.frame_len > record.consumed ||
+		    cursor + record.frame_off + record.frame_len > actual_len) {
+			atomic_inc(&dwr->rx.stats.drop_bad_desc);
+			break;
+		}
 
-	skb = dev_alloc_skb(frame_len + 64);
-	if (!skb) {
-		atomic_inc(&dwr->rx.stats.drop_bad_desc);
-		return;
-	}
+		skb = dev_alloc_skb(record.frame_len + 64);
+		if (!skb) {
+			atomic_inc(&dwr->rx.stats.drop_bad_desc);
+			break;
+		}
 
-	skb_reserve(skb, 2);
-	skb_put_data(skb, &slot->buf[frame_off], frame_len);
-	memcpy(IEEE80211_SKB_RXCB(skb), &status, sizeof(status));
-	if (status.flag & RX_FLAG_FAILED_FCS_CRC) {
-		atomic_inc(&dwr->rx.stats.delivered_failed_fcs);
-		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] delivering failed-FCS frame len=%d\n",
-			slot->index, frame_len);
+		skb_reserve(skb, 2);
+		skb_put_data(skb, &slot->buf[cursor + record.frame_off],
+			     record.frame_len);
+		memcpy(IEEE80211_SKB_RXCB(skb), &record.status, sizeof(record.status));
+		if (record.status.flag & RX_FLAG_FAILED_FCS_CRC) {
+			atomic_inc(&dwr->rx.stats.delivered_failed_fcs);
+			dwr_dbg(&dwr->usb.intf->dev,
+				"rx urb[%u] delivering failed-FCS frame len=%d\n",
+				slot->index, record.frame_len);
+		}
+		if (record.status.flag & RX_FLAG_FAILED_PLCP_CRC) {
+			atomic_inc(&dwr->rx.stats.delivered_failed_plcp);
+			dwr_dbg(&dwr->usb.intf->dev,
+				"rx urb[%u] delivering non-CRC descriptor-drop frame len=%d\n",
+				slot->index, record.frame_len);
+		}
+		ieee80211_rx_irqsafe(dwr->hw, skb);
+		atomic_inc(&dwr->rx.stats.delivered);
+
+		cursor += record.consumed;
 	}
-	if (status.flag & RX_FLAG_FAILED_PLCP_CRC) {
-		atomic_inc(&dwr->rx.stats.delivered_failed_plcp);
-		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] delivering non-CRC descriptor-drop frame len=%d\n",
-			slot->index, frame_len);
-	}
-	ieee80211_rx_irqsafe(dwr->hw, skb);
-	atomic_inc(&dwr->rx.stats.delivered);
 }
 
 static void dwr_rx_complete(struct urb *urb)
