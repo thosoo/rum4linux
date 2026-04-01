@@ -1032,6 +1032,8 @@ int dwr_set_tsf_sync(struct dwr_dev *dwr, bool enable, u16 beacon_int)
 	/*
 	 * OpenBSD rum_enable_tsf_sync() preserves TXRX_CSR9[31:24] and
 	 * programs TSF mode/interval in the low 24 bits for STA mode.
+	 * TODO(openbsd-rum-port): no primary-source-confirmed fixed value for
+	 * TXRX_CSR9 timestamp compensation in this narrow path; preserve it.
 	 */
 	timestamp_comp = reg & DWR_TXRX_CSR9_TIMESTAMP_COMP_MASK;
 	reg = timestamp_comp;

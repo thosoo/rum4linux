@@ -40,6 +40,7 @@ Implemented scaffold pieces:
 - narrow station timing defaults are now tightened to OpenBSD-backed RT2573 values in the current path: slot 9/20us, SIFS 10us, OFDM-SIFS 3us, EIFS 0x016c, RX_ACK_TIMEOUT 0x32, TSF_OFFSET 24
 - RT2573 RX timing defaults are now applied directly in hardware init (`dwr_hw_init`) for the active narrow path, rather than only from mac80211 start call-site wiring
 - STA TSF sync programming now explicitly mirrors OpenBSD `rum_enable_tsf_sync()` shape by preserving TXRX_CSR9 timestamp-compensation bits [31:24] and rebuilding the low TSF-control bits from scratch (interval + TSF mode/ticking/TBTT in STA mode)
+- TXRX_CSR9 timestamp-compensation high-byte value itself remains unresolved for this narrow path; current code preserves existing hardware/default value (`TODO(openbsd-rum-port)`) instead of inventing a constant
 - hardware AID programming is still unresolved: primary-source review of OpenBSD `if_rum.c` + `if_rumreg.h` did not confirm a dedicated RT2573 station-path AID register/field, so AID remains software-tracked only (`TODO(openbsd-rum-port)`)
 
 Still intentionally incomplete:
