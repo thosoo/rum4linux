@@ -1142,7 +1142,12 @@ int dwr_set_erp_timing(struct dwr_dev *dwr, bool short_preamble,
 		  DWR_MAC_CSR8_SIFS_AFTER_RX_OFDM_MASK |
 		  DWR_MAC_CSR8_EIFS_MASK);
 	mac8 |= FIELD_PREP(DWR_MAC_CSR8_SIFS_MASK, sifs);
-	mac8 |= FIELD_PREP(DWR_MAC_CSR8_SIFS_AFTER_RX_OFDM_MASK, 3);
+	/*
+	 * OpenBSD if_rumreg.h RT2573_DEF_MAC sets MAC_CSR8 to 0x016c030a:
+	 * SIFS=0x0a, SIFS_after_RX_OFDM=0x03, EIFS=0x016c.
+	 */
+	mac8 |= FIELD_PREP(DWR_MAC_CSR8_SIFS_AFTER_RX_OFDM_MASK,
+			   DWR_RT2573_MAC_CSR8_SIFS_OFDM_DEFAULT);
 	mac8 |= FIELD_PREP(DWR_MAC_CSR8_EIFS_MASK, eifs);
 	return dwr_write_reg(dwr, DWR_MAC_CSR8, mac8);
 }
@@ -1157,8 +1162,14 @@ int dwr_set_rx_timing_defaults(struct dwr_dev *dwr)
 		return ret;
 
 	reg &= ~(DWR_TXRX_CSR0_RX_ACK_TIMEOUT_MASK | DWR_TXRX_CSR0_TSF_OFFSET_MASK);
-	reg |= FIELD_PREP(DWR_TXRX_CSR0_RX_ACK_TIMEOUT_MASK, 0x32);
-	reg |= FIELD_PREP(DWR_TXRX_CSR0_TSF_OFFSET_MASK, 24);
+	/*
+	 * OpenBSD if_rumreg.h RT2573_DEF_MAC sets TXRX_CSR0=0x025fb032:
+	 * RX_ACK_TIMEOUT=0x32 and TSF_OFFSET=24.
+	 */
+	reg |= FIELD_PREP(DWR_TXRX_CSR0_RX_ACK_TIMEOUT_MASK,
+			  DWR_RT2573_TXRX_CSR0_ACK_TIMEOUT_DEFAULT);
+	reg |= FIELD_PREP(DWR_TXRX_CSR0_TSF_OFFSET_MASK,
+			  DWR_RT2573_TXRX_CSR0_TSF_OFFSET_DEFAULT);
 	return dwr_write_reg(dwr, DWR_TXRX_CSR0, reg);
 }
 

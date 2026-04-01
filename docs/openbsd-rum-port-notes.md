@@ -68,6 +68,7 @@ This is a structural generalization pass, not a claim of broad functional enable
   - RUN-entry TXRX_CSR4 programming now uses one coherent final path for aliased MRR/OFDM-fallback fields
   - conservative BBP17/VGC tuner is wired for associated station mode using rt73usb-backed inputs (RSSI, FCS, false-CCA); false_cca thresholds are intentionally conservative (>512 up, <100 down), and STA_CSR1 low-16 remains non-policy observability only
   - BBP17/VGC tuner now uses the runtime 2.4GHz profile baseline (including ext_2ghz_lna offset) rather than a fixed 0x20 base
+  - narrow station timing defaults are now explicitly aligned to OpenBSD RT2573 source values: slot time 9/20us (rum_update_slot), TXRX_CSR9 beacon interval in 1/16ms with STA TSF mode (rum_enable_tsf_sync), MAC_CSR8 SIFS/OFDM-SIFS/EIFS from RT2573_DEF_MAC (0x016c030a), and TXRX_CSR0 RX_ACK_TIMEOUT/TSF_OFFSET from RT2573_DEF_MAC (0x025fb032)
 
 ## Explicitly incomplete / deferred
 
@@ -77,7 +78,7 @@ This is a structural generalization pass, not a claim of broad functional enable
 - OFDM RX decode remains conservative/source-backed, but OFDM TX descriptor/status plumbing is intentionally not exposed yet
 - high-confidence RX descriptor validation across additional variants/revisions beyond the current conservative mapping
 - association / operational station behavior
-- full source-backed validation of runtime timing defaults (ACK timeout/TSF offset/EIFS constants) across revisions
+- full source-backed validation of runtime timing defaults across revisions is still incomplete; current tightening is intentionally narrow to RT2573 station-path values confirmed from OpenBSD sources
 - hardware AID programming remains unresolved; primary-source review of OpenBSD `if_rum.c` + `if_rumreg.h` did not confirm a dedicated RT2573 station-path AID register/field, so current path keeps AID software-tracked with TODO(openbsd-rum-port)
 - fake-join tx-rate init from if_rum.c has no direct mac80211 equivalent in current narrow path and remains intentionally unported
 - broad USB ID enumeration and per-device bring-up policies

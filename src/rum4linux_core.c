@@ -274,7 +274,11 @@ static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *
 	}
 
 	ret = dwr_set_erp_timing(dwr, info->use_short_preamble,
-				 info->use_short_slot ? 9 : 20, 10, 314);
+				 info->use_short_slot ?
+				 DWR_RT2573_SLOT_TIME_SHORT :
+				 DWR_RT2573_SLOT_TIME_LONG,
+				 DWR_RT2573_MAC_CSR8_SIFS_DEFAULT,
+				 DWR_RT2573_MAC_CSR8_EIFS_DEFAULT);
 	if (ret)
 		dwr_dbg(&dwr->usb.intf->dev, "run enter erp timing failed: %d\n", ret);
 	ret = dwr_set_retry_limits(dwr, short_retry, long_retry, true, 0, true);
@@ -369,8 +373,11 @@ static void dwr_mac_bss_info_changed(struct ieee80211_hw *hw,
 	}
 	if (changed & (BSS_CHANGED_ERP_PREAMBLE | BSS_CHANGED_ERP_SLOT)) {
 		ret = dwr_set_erp_timing(dwr, info->use_short_preamble,
-					 info->use_short_slot ? 9 : 20,
-					 10, 314);
+					 info->use_short_slot ?
+					 DWR_RT2573_SLOT_TIME_SHORT :
+					 DWR_RT2573_SLOT_TIME_LONG,
+					 DWR_RT2573_MAC_CSR8_SIFS_DEFAULT,
+					 DWR_RT2573_MAC_CSR8_EIFS_DEFAULT);
 		if (ret)
 			dwr_dbg(&dwr->usb.intf->dev, "set erp timing failed: %d\n", ret);
 	}
