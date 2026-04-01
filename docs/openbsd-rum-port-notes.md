@@ -78,7 +78,7 @@ This is a structural generalization pass, not a claim of broad functional enable
 - high-confidence RX descriptor validation across additional variants/revisions beyond the current conservative mapping
 - association / operational station behavior
 - full source-backed validation of runtime timing defaults (ACK timeout/TSF offset/EIFS constants) across revisions
-- hardware AID programming remains unresolved; current path keeps AID software-tracked with TODO(openbsd-rum-port)
+- hardware AID programming remains unresolved; primary-source review of OpenBSD `if_rum.c` + `if_rumreg.h` did not confirm a dedicated RT2573 station-path AID register/field, so current path keeps AID software-tracked with TODO(openbsd-rum-port)
 - fake-join tx-rate init from if_rum.c has no direct mac80211 equivalent in current narrow path and remains intentionally unported
 - broad USB ID enumeration and per-device bring-up policies
 - broad firmware naming certainty across the whole family
