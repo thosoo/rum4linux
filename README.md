@@ -40,6 +40,7 @@ Implemented scaffold pieces:
 - RX framing now follows source-backed RT2573/rt73 shape more closely: descriptor byte-count is used directly as frame length (no unconditional FCS subtraction), and frame start is fixed at descriptor end (24-byte descriptor); non-zero descriptor frame-offset is currently ignored in the narrow path (TODO-scoped for broader variants)
 - RX signal decode now avoids dropping frames solely on unknown descriptor signal values: it falls back to 1 Mbps index (OpenBSD `rum_rxrate()` fallback shape) and keeps delivery conservative
 - RX RSSI metadata now follows rt73/RT2573 AGC+LNA decode shape (instead of raw byte use), improving signal/link-tuner inputs in the active narrow station path
+- RX rate metadata is now kept coherent with the CCK-only supported-rate table: OFDM RX frames are delivered with conservative 1 Mbps fallback metadata instead of out-of-range OFDM rate indexes
 - CCK TX descriptor PLCP fields now mirror OpenBSD `rum_setup_tx_desc()` edge behavior for this narrow path: 11 Mbps `PLCP_LENGEXT` handling and short-preamble signal-bit application when configured
 - TX bulk-OUT transfer length is now 4-byte padded (descriptor+frame rounded up), matching OpenBSD `rum_tx_data()` transfer-shape handling for RT2573
 - RX descriptor parsing now drops BUSY-marked descriptors and payloads shorter than `ieee80211_frame_min`, mirroring conservative OpenBSD receive gating before frame delivery

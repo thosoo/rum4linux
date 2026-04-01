@@ -63,29 +63,13 @@ static int dwr_rx_rate_idx(bool ofdm, u8 signal)
 	}
 
 	/*
-	 * TODO(openbsd-rum-port): validate complete OFDM PLCP signal mapping across all rum(4)-family revisions.
-	 * These values align with common rt2x00/rt73 OFDM signal coding.
+	 * Current supported-rate table is intentionally CCK-only in this narrow
+	 * station path. Keep OFDM RX conservative by falling back through the
+	 * unknown-signal path instead of emitting out-of-range rate_idx values.
+	 * TODO(openbsd-rum-port): wire source-backed OFDM RX rate metadata only
+	 * when it can be surfaced without broadening TX-operational claims.
 	 */
-	switch (signal) {
-	case 0xb:
-		return 4;  /* 6 Mbps */
-	case 0xf:
-		return 5;  /* 9 Mbps */
-	case 0xa:
-		return 6;  /* 12 Mbps */
-	case 0xe:
-		return 7;  /* 18 Mbps */
-	case 0x9:
-		return 8;  /* 24 Mbps */
-	case 0xd:
-		return 9;  /* 36 Mbps */
-	case 0x8:
-		return 10; /* 48 Mbps */
-	case 0xc:
-		return 11; /* 54 Mbps */
-	default:
-		return -EINVAL;
-	}
+	return -EINVAL;
 }
 
 static int dwr_rx_word1_to_rssi_dbm(struct dwr_dev *dwr, u32 word1)

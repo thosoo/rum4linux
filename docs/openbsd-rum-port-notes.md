@@ -61,7 +61,7 @@ This is a structural generalization pass, not a claim of broad functional enable
   - channel-apply failures now include conservative error-origin attribution (sanity-read source vs sanity-pattern vs profile/rf/recovery origin) with bounded counters
   - origin counters are failure-attribution counts only, and the latest failure snapshot is retained (stage/class/origin/errno + any successfully-captured sanity reads)
   - channel-apply failure diagnostics now also retain one bounded delta snapshot that compares latest retained failure vs the immediately previous retained failure (runtime/init, channel/stage/class/origin/errno, and sanity value state as missing/same/changed)
-  - RX CCK rate decode follows rum_rxrate()/rt73 semantics (raw 100kbps values 10/20/55/110) with conservative OFDM PLCP mapping
+  - RX CCK rate decode follows rum_rxrate()/rt73 semantics (raw 100kbps values 10/20/55/110); OFDM RX frames are delivered conservatively with 1 Mbps fallback metadata while the narrow supported-rate table remains CCK-only
   - station-stop/disconnect logging now includes source-backed STA_CSR0/STA_CSR1 error counters (FCS/PLCP/physical/false-CCA)
   - RX filter parity tightened to rt73usb station behavior (DROP_ACK_CTS follows FIF_CONTROL; DROP_CONTROL follows FIF_CONTROL|FIF_PSPOLL)
   - RX software delivery now follows active filter policy for failed-FCS and failed-PLCP/PHY classes: frames are dropped only when policy requests drop, and delivered failures are flagged/counted for mac80211 observability
