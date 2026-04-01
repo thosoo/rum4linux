@@ -29,6 +29,20 @@
 
 static void dwr_rx_complete(struct urb *urb);
 
+static bool dwr_rx_has_non_crc_drop_error(u32 word0)
+{
+	bool drop = !!(word0 & DWR_RXD_W0_DROP);
+	bool crc = !!(word0 & DWR_RXD_W0_CRC_ERROR);
+
+	/*
+	 * OpenBSD if_rumreg.h names this bit RT2573_RX_DROP but does not
+	 * define a narrower PLCP/PHY cause, and if_rum.c does not classify it.
+	 * Keep CRC as the only explicit class, and treat DROP as a broader
+	 * non-CRC receive-error class in this narrow path.
+	 */
+	return drop && !crc;
+}
+
 static int dwr_rx_rate_idx(bool ofdm, u8 signal)
 {
 	if (!ofdm) {
@@ -109,7 +123,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	int rate_idx;
 	bool ofdm;
 	bool crc_error;
-	bool drop_error;
+	bool non_crc_drop_error;
 	bool allow_fcs_fail;
 	bool allow_plcp_fail;
 	int min_total;
@@ -130,7 +144,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	frame_offset = FIELD_GET(DWR_RXD_W1_FRAME_OFFSET_MASK, word1);
 	ofdm = !!(word0 & DWR_RXD_W0_OFDM);
 	crc_error = !!(word0 & DWR_RXD_W0_CRC_ERROR);
-	drop_error = !!(word0 & DWR_RXD_W0_DROP);
+	non_crc_drop_error = dwr_rx_has_non_crc_drop_error(word0);
 	allow_fcs_fail = !!(READ_ONCE(dwr->filter_flags) & FIF_FCSFAIL);
 	allow_plcp_fail = !!(READ_ONCE(dwr->filter_flags) & FIF_PLCPFAIL);
 
@@ -153,18 +167,19 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	}
 
 	/*
-	 * Linux rt73 descriptor exposes RXD_W0_DROP as a broad drop/error bit.
-	 * For this narrow path, treat it as PLCP/PHY-failure class only when
-	 * FIF_PLCPFAIL requests those frames; broader semantics remain unknown.
-	 * TODO(openbsd-rum-port): confirm all RXD_W0_DROP causes on RT2573.
+	 * RT2573_RX_DROP is source-confirmed as a broad drop bit, but not
+	 * source-confirmed as a pure PLCP or PHY indicator in if_rum.c/reg.h.
+	 * We therefore gate only non-CRC DROP frames with FIF_PLCPFAIL as the
+	 * closest mac80211 failure-policy class for now.
+	 * TODO(openbsd-rum-port): confirm full RT2573 RX_DROP cause taxonomy.
 	 */
-	if (drop_error && !allow_plcp_fail) {
+	if (non_crc_drop_error && !allow_plcp_fail) {
 		atomic_inc(&dwr->rx.stats.drop_failed_plcp_filtered);
 		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] drop failed-PLCP/PHY by filter policy drop=%u crc=%u ofdm=%u signal=%u rssi=%d data_len=%u\n",
+			"rx urb[%u] drop non-CRC descriptor-drop by filter policy drop=%u crc=%u ofdm=%u signal=%u rssi=%d data_len=%u\n",
 			slot->index,
-			drop_error, crc_error,
+			!!(word0 & DWR_RXD_W0_DROP), crc_error,
 				ofdm,
 				signal, rssi, data_len);
 		return false;
@@ -196,7 +211,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 						      NL80211_BAND_2GHZ);
 	if (crc_error)
 		status->flag |= RX_FLAG_FAILED_FCS_CRC;
-	if (drop_error)
+	if (non_crc_drop_error)
 		status->flag |= RX_FLAG_FAILED_PLCP_CRC;
 
 	dwr_dbg(&dwr->usb.intf->dev,
@@ -240,7 +255,7 @@ static void dwr_rx_deliver_frame(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	if (status.flag & RX_FLAG_FAILED_PLCP_CRC) {
 		atomic_inc(&dwr->rx.stats.delivered_failed_plcp);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] delivering failed-PLCP/PHY frame len=%d\n",
+			"rx urb[%u] delivering non-CRC descriptor-drop frame len=%d\n",
 			slot->index, frame_len);
 	}
 	ieee80211_rx_irqsafe(dwr->hw, skb);

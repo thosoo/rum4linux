@@ -65,6 +65,7 @@ This is a structural generalization pass, not a claim of broad functional enable
   - station-stop/disconnect logging now includes source-backed STA_CSR0/STA_CSR1 error counters (FCS/PLCP/physical/false-CCA)
   - RX filter parity tightened to rt73usb station behavior (DROP_ACK_CTS follows FIF_CONTROL; DROP_CONTROL follows FIF_CONTROL|FIF_PSPOLL)
   - RX software delivery now follows active filter policy for failed-FCS and failed-PLCP/PHY classes: frames are dropped only when policy requests drop, and delivered failures are flagged/counted for mac80211 observability
+  - RX failure taxonomy is now tightened slightly for RT2573: explicit RX_CRC_ERROR remains the only concrete FCS class, while RX_DROP is treated as broader non-CRC descriptor-drop (not asserted as pure PLCP/PHY), still mapped through FIF_PLCPFAIL/RX failed-PLCP flag as a conservative policy proxy
   - RUN-entry TXRX_CSR4 programming now uses one coherent final path for aliased MRR/OFDM-fallback fields
   - conservative BBP17/VGC tuner is wired for associated station mode using rt73usb-backed inputs (RSSI, FCS, false-CCA); false_cca thresholds are intentionally conservative (>512 up, <100 down), and STA_CSR1 low-16 remains non-policy observability only
   - BBP17/VGC tuner now uses the runtime 2.4GHz profile baseline (including ext_2ghz_lna offset) rather than a fixed 0x20 base
@@ -94,7 +95,7 @@ Current RX descriptor assumptions are intentionally narrow and source-backed:
 
 Any broader bit semantics or per-revision behavior remain `TODO(openbsd-rum-port)`.
 
-`RXD_W0_DROP` remains a broad descriptor bit in Linux rt73 sources; in this narrow port it is treated as PLCP/PHY-failure class for filter-coherence only, and fuller cause mapping remains `TODO(openbsd-rum-port)`.
+`RXD_W0_DROP`/`RT2573_RX_DROP` remains a broad descriptor bit in available sources; in this narrow port it is treated as a non-CRC descriptor-drop class. Because no dedicated mac80211 “generic RX drop” failure policy exists for this path, `FIF_PLCPFAIL` and RX failed-PLCP flagging are used as conservative proxies only. Fuller cause mapping remains `TODO(openbsd-rum-port)`.
 
 ## Device-ID and coverage policy
 
