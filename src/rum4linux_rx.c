@@ -201,11 +201,14 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 
 	rate_idx = dwr_rx_rate_idx(ofdm, signal);
 	if (rate_idx < 0) {
-		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] unsupported signal=%u ofdm=%u\n",
+			"rx urb[%u] unknown signal=%u ofdm=%u, falling back to 1Mbps idx=0\n",
 			slot->index, signal, ofdm);
-		return false;
+		/*
+		 * OpenBSD rum_rxrate() falls back to 1 Mbps on unknown signal.
+		 * Keep delivery conservative by avoiding descriptor-drop here.
+		 */
+		rate_idx = 0;
 	}
 
 	*frame_off = DWR_RX_DESC_LEN;
