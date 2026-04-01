@@ -1022,27 +1022,24 @@ int dwr_set_basic_rates(struct dwr_dev *dwr, u32 basic_rates)
 int dwr_set_tsf_sync(struct dwr_dev *dwr, bool enable, u16 beacon_int)
 {
 	u32 reg;
+	u32 timestamp_comp;
 	int ret;
 
 	ret = dwr_read_reg(dwr, DWR_TXRX_CSR9, &reg);
 	if (ret)
 		return ret;
 
-	reg &= ~(DWR_TXRX_CSR9_BEACON_INTERVAL_MASK |
-		 DWR_TXRX_CSR9_TSF_TICKING |
-		 DWR_TXRX_CSR9_TSF_MODE_MASK |
-		 DWR_TXRX_CSR9_ENABLE_TBTT |
-		 DWR_TXRX_CSR9_GENERATE_BEACON);
-	reg |= ((u32)beacon_int * 16) & DWR_TXRX_CSR9_BEACON_INTERVAL_MASK;
+	/*
+	 * OpenBSD rum_enable_tsf_sync() preserves TXRX_CSR9[31:24] and
+	 * programs TSF mode/interval in the low 24 bits for STA mode.
+	 */
+	timestamp_comp = reg & DWR_TXRX_CSR9_TIMESTAMP_COMP_MASK;
+	reg = timestamp_comp;
 
 	if (enable) {
+		reg |= ((u32)beacon_int * 16) & DWR_TXRX_CSR9_BEACON_INTERVAL_MASK;
 		reg |= DWR_TXRX_CSR9_TSF_TICKING | DWR_TXRX_CSR9_ENABLE_TBTT;
-		reg &= ~DWR_TXRX_CSR9_TSF_MODE_MASK;
 		reg |= FIELD_PREP(DWR_TXRX_CSR9_TSF_MODE_MASK, 1);
-		reg &= ~DWR_TXRX_CSR9_GENERATE_BEACON;
-	} else {
-		reg &= ~(DWR_TXRX_CSR9_TSF_TICKING | DWR_TXRX_CSR9_ENABLE_TBTT |
-			 DWR_TXRX_CSR9_TSF_MODE_MASK | DWR_TXRX_CSR9_GENERATE_BEACON);
 	}
 
 	return dwr_write_reg(dwr, DWR_TXRX_CSR9, reg);

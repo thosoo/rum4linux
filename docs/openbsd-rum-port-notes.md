@@ -71,6 +71,7 @@ This is a structural generalization pass, not a claim of broad functional enable
   - BBP17/VGC tuner now uses the runtime 2.4GHz profile baseline (including ext_2ghz_lna offset) rather than a fixed 0x20 base
   - narrow station timing defaults are now explicitly aligned to OpenBSD RT2573 source values: slot time 9/20us (rum_update_slot), TXRX_CSR9 beacon interval in 1/16ms with STA TSF mode (rum_enable_tsf_sync), MAC_CSR8 SIFS/OFDM-SIFS/EIFS from RT2573_DEF_MAC (0x016c030a), and TXRX_CSR0 RX_ACK_TIMEOUT/TSF_OFFSET from RT2573_DEF_MAC (0x025fb032)
   - RX timing defaults are now applied in the narrow hardware-init path (`dwr_hw_init`) so active station bring-up does not depend on a separate mac80211-start call-site for TXRX_CSR0 timing defaults
+  - STA TSF-sync helper now explicitly preserves TXRX_CSR9[31:24] timestamp-compensation bits and reconstructs low TSF-control bits (interval + TSF mode/ticking/TBTT) to mirror OpenBSD `rum_enable_tsf_sync()` register-shape behavior
 
 ## Explicitly incomplete / deferred
 

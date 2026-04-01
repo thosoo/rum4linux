@@ -39,6 +39,7 @@ Implemented scaffold pieces:
 - RX descriptor failure taxonomy is now slightly tightened for the narrow RT2573 path: explicit CRC bit remains failed-FCS, while `RXD_W0_DROP` is treated as a broader non-CRC descriptor-drop class (not claimed as pure PLCP/PHY), still gated via `FIF_PLCPFAIL` as the closest mac80211 policy hook
 - narrow station timing defaults are now tightened to OpenBSD-backed RT2573 values in the current path: slot 9/20us, SIFS 10us, OFDM-SIFS 3us, EIFS 0x016c, RX_ACK_TIMEOUT 0x32, TSF_OFFSET 24
 - RT2573 RX timing defaults are now applied directly in hardware init (`dwr_hw_init`) for the active narrow path, rather than only from mac80211 start call-site wiring
+- STA TSF sync programming now explicitly mirrors OpenBSD `rum_enable_tsf_sync()` shape by preserving TXRX_CSR9 timestamp-compensation bits [31:24] and rebuilding the low TSF-control bits from scratch (interval + TSF mode/ticking/TBTT in STA mode)
 - hardware AID programming is still unresolved: primary-source review of OpenBSD `if_rum.c` + `if_rumreg.h` did not confirm a dedicated RT2573 station-path AID register/field, so AID remains software-tracked only (`TODO(openbsd-rum-port)`)
 
 Still intentionally incomplete:
