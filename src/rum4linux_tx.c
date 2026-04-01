@@ -175,6 +175,7 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 	struct dwr_tx_urb_ctx *ctx;
 	struct urb *urb;
 	u8 *buf;
+	size_t xfer_len;
 	int ret;
 	size_t total;
 
@@ -187,7 +188,8 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 		return ret;
 
 	total = sizeof(desc) + skb->len;
-	buf = kmalloc(total, GFP_ATOMIC);
+	xfer_len = roundup(total, 4);
+	buf = kzalloc(xfer_len, GFP_ATOMIC);
 	if (!buf)
 		return -ENOMEM;
 
@@ -216,7 +218,7 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 
 	usb_fill_bulk_urb(urb, dwr->usb.udev,
 			 usb_sndbulkpipe(dwr->usb.udev, dwr->usb.bulk_out_ep),
-			 buf, total, dwr_tx_complete, ctx);
+			 buf, xfer_len, dwr_tx_complete, ctx);
 	usb_anchor_urb(urb, &dwr->usb.tx_anchor);
 
 	ret = usb_submit_urb(urb, GFP_ATOMIC);

@@ -100,6 +100,7 @@ Current RX descriptor assumptions are intentionally narrow and source-backed:
 - OpenBSD `rum_rxrate()` fallback behavior returns 1 Mbps-equivalent on unknown signal; this narrow port now mirrors that conservatively by falling back to CCK idx 0 instead of dropping frames solely due to unknown descriptor signal value.
 - RX RSSI now follows the rt73usb AGC/LNA field decode shape for RT2573 lineage (`word1` AGC/LNA-derived dBm), rather than treating `word1[15:8]` as a raw RSSI byte.
 - CCK TX PLCP programming now mirrors OpenBSD `rum_setup_tx_desc()` details for the narrow path: 11 Mbps `PLCP_LENGEXT` service-bit handling and short-preamble signal-bit application when short preamble is configured.
+- TX bulk submissions now round descriptor+frame transfer length to a 4-byte boundary, mirroring OpenBSD `rum_tx_data()` xfer length shaping.
 
 Any broader bit semantics or per-revision behavior remain `TODO(openbsd-rum-port)`.
 
