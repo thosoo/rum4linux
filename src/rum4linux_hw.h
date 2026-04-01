@@ -207,6 +207,21 @@ struct dwr_hw_state {
 	u8 last_channel_apply_errclass;
 	u8 last_channel_apply_origin;
 	int last_channel_apply_err;
+	bool last_channel_apply_failure_snapshot_valid;
+	bool last_channel_apply_failure_was_runtime;
+	u8 last_channel_apply_failure_channel;
+	u8 last_channel_apply_failure_stage;
+	u8 last_channel_apply_failure_errclass;
+	u8 last_channel_apply_failure_origin;
+	int last_channel_apply_failure_err;
+	bool last_channel_apply_failure_has_mac_csr0;
+	bool last_channel_apply_failure_has_phy_csr4;
+	bool last_channel_apply_failure_has_bbp0;
+	bool last_channel_apply_failure_has_bbp3;
+	u32 last_channel_apply_failure_mac_csr0;
+	u32 last_channel_apply_failure_phy_csr4;
+	u8 last_channel_apply_failure_bbp0;
+	u8 last_channel_apply_failure_bbp3;
 };
 
 struct dwr_usb_state {
