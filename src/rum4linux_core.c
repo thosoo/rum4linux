@@ -176,9 +176,6 @@ static int dwr_mac_start(struct ieee80211_hw *hw)
 	ret = dwr_set_macaddr(dwr, dwr->mac_addr);
 	if (ret)
 		return ret;
-	ret = dwr_set_rx_timing_defaults(dwr);
-	if (ret)
-		return ret;
 	ret = dwr_set_rx_filter(dwr, dwr->filter_flags);
 	if (ret)
 		return ret;

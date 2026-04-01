@@ -843,6 +843,13 @@ int dwr_hw_init(struct dwr_dev *dwr)
 		dwr_log_init_summary(dwr);
 		return ret;
 	}
+
+	ret = dwr_set_rx_timing_defaults(dwr);
+	if (ret) {
+		dwr_err(&dwr->usb.intf->dev, "rx timing defaults init failed: %d\n", ret);
+		dwr_log_init_summary(dwr);
+		return ret;
+	}
 	dwr->hw_state.post_fw_sanity_ok = true;
 	dwr->hw_state.hw_init_ok = true;
 
