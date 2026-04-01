@@ -95,6 +95,7 @@ Current RX descriptor assumptions are intentionally narrow and source-backed:
 - `word0` data-byte-count extraction and drop/CRC/ofdm flag usage from Linux `rt73usb` receive path.
 - `word1` signal/rssi/frame-offset extraction pattern from Linux `rt73usb`.
 - OpenBSD `if_rum.c` framing model (USB payload includes descriptor metadata plus frame body).
+- RT2573/rt73 receive paths use descriptor byte-count directly for frame length; this narrow port now mirrors that (no unconditional FCS subtraction from RXD byte-count).
 
 Any broader bit semantics or per-revision behavior remain `TODO(openbsd-rum-port)`.
 

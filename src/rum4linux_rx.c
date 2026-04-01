@@ -195,12 +195,16 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	}
 
 	*frame_off = DWR_RX_DESC_LEN + frame_offset;
-	/* rt73/rum path reports byte count including FCS; strip it before mac80211 delivery. */
-	if (data_len < IEEE80211_FCS_LEN) {
+	/*
+	 * OpenBSD if_rum.c uses RX descriptor byte-count directly as frame
+	 * length, and Linux rt73usb also trims skb to RXD_W0_DATABYTE_COUNT
+	 * directly. Keep that shape here and do not subtract FCS bytes.
+	 */
+	if (!data_len) {
 		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		return false;
 	}
-	*frame_len = data_len - IEEE80211_FCS_LEN;
+	*frame_len = data_len;
 
 	memset(status, 0, sizeof(*status));
 	status->band = NL80211_BAND_2GHZ;
