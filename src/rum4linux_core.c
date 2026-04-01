@@ -20,14 +20,6 @@ static struct ieee80211_rate dwr_rates_2ghz[] = {
 	{ .bitrate = 20,  .hw_value = 1 },
 	{ .bitrate = 55,  .hw_value = 2 },
 	{ .bitrate = 110, .hw_value = 3 },
-	{ .bitrate = 60,  .hw_value = 4 },
-	{ .bitrate = 90,  .hw_value = 5 },
-	{ .bitrate = 120, .hw_value = 6 },
-	{ .bitrate = 180, .hw_value = 7 },
-	{ .bitrate = 240, .hw_value = 8 },
-	{ .bitrate = 360, .hw_value = 9 },
-	{ .bitrate = 480, .hw_value = 10 },
-	{ .bitrate = 540, .hw_value = 11 },
 };
 
 #define DWR_CHAN(_idx, _freq) { .band = NL80211_BAND_2GHZ, .center_freq = (_freq), .hw_value = (_idx), .max_power = 20 }
@@ -134,21 +126,17 @@ static void dwr_link_tuner_workfn(struct work_struct *work)
 	rssi = READ_ONCE(dwr->link_rssi_dbm);
 	have_rssi = rssi != DWR_LINK_RSSI_INVALID_DBM;
 	if (!have_rssi) {
-		low_bound = 0x1c;
-		up_bound = 0x20;
+		low_bound = dwr->bbp17_base - 0x04;
+		up_bound = dwr->bbp17_base;
 	} else if (rssi > -82) {
-		low_bound = 0x1c;
-		up_bound = 0x40;
+		low_bound = dwr->bbp17_base - 0x04;
+		up_bound = dwr->bbp17_base + 0x20;
 	} else if (rssi > -84) {
-		low_bound = 0x1c;
-		up_bound = 0x20;
+		low_bound = dwr->bbp17_base - 0x04;
+		up_bound = dwr->bbp17_base;
 	} else {
-		low_bound = 0x1c;
-		up_bound = 0x1c;
-	}
-	if (dwr->eeprom.ext_2ghz_lna) {
-		low_bound += 0x14;
-		up_bound += 0x10;
+		low_bound = dwr->bbp17_base - 0x04;
+		up_bound = dwr->bbp17_base - 0x04;
 	}
 
 	next_vgc = dwr->vgc_level;
@@ -208,13 +196,13 @@ static int dwr_mac_start(struct ieee80211_hw *hw)
 static void dwr_mac_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct dwr_dev *dwr = hw_to_dwr(hw);
-	int ret;
 
 	dwr_info(&dwr->usb.intf->dev, "mac80211 stop suspend=%d\n", suspend);
 	dwr->usb.running = false;
 	dwr_leave_run_state(dwr, "stop");
 	dwr_rx_stop(dwr);
 	dwr_rx_log_summary(dwr, "mac_stop");
+	dwr_log_channel_apply_summary(dwr, "mac_stop");
 	dwr_log_sta_rx_counters(dwr, "mac_stop");
 	dwr_tx_cancel_pending(dwr);
 	dwr_hw_stop(dwr);
@@ -296,7 +284,7 @@ static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *
 	ret = dwr_set_tsf_sync(dwr, true, info->beacon_int);
 	if (ret)
 		dwr_dbg(&dwr->usb.intf->dev, "run enter tsf sync failed: %d\n", ret);
-	ret = dwr_set_vgc(dwr, 0x20);
+	ret = dwr_set_vgc(dwr, dwr->bbp17_base);
 	if (ret)
 		dwr_dbg(&dwr->usb.intf->dev, "run enter set vgc failed: %d\n", ret);
 	WRITE_ONCE(dwr->link_rssi_dbm, DWR_LINK_RSSI_INVALID_DBM);
@@ -468,6 +456,7 @@ static int dwr_usb_probe(struct usb_interface *intf,
 	INIT_DELAYED_WORK(&dwr->link_tuner_work, dwr_link_tuner_workfn);
 	dwr_rx_init_state(dwr);
 	dwr->link_rssi_dbm = DWR_LINK_RSSI_INVALID_DBM;
+	dwr->bbp17_base = 0x20;
 
 	ret = dwr_detect_endpoints(dwr);
 	if (ret)
@@ -527,6 +516,7 @@ static void dwr_usb_disconnect(struct usb_interface *intf)
 	dwr_leave_run_state(dwr, "disconnect");
 	dwr_rx_stop(dwr);
 	dwr_rx_log_summary(dwr, "disconnect");
+	dwr_log_channel_apply_summary(dwr, "disconnect");
 	dwr_log_sta_rx_counters(dwr, "disconnect");
 	dwr_tx_cancel_pending(dwr);
 	cancel_work_sync(&dwr->reset_work);

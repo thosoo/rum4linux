@@ -48,6 +48,7 @@ static u8 dwr_plcp_signal_cck(u8 rate_500k)
 
 static int dwr_tx_signal_rate_500k_from_idx(int idx, u8 *signal, u8 *rate_500k)
 {
+	/* Narrow truthful TX support: only 2.4GHz CCK indices 0..3. */
 	switch (idx) {
 	case 0:
 		*rate_500k = 2;

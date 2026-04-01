@@ -93,6 +93,8 @@
 #define DWR_STA_CSR0_PLCP_ERROR_MASK GENMASK(31, 16)
 #define DWR_STA_CSR1_PHYSICAL_ERROR_MASK GENMASK(15, 0)
 #define DWR_STA_CSR1_FALSE_CCA_MASK GENMASK(31, 16)
+#define DWR_PHY_CSR0_PA_PE_2GHZ BIT(16)
+#define DWR_PHY_CSR0_PA_PE_5GHZ BIT(17)
 
 #define DWR_RF_5226            1
 #define DWR_RF_2528            2
@@ -108,6 +110,39 @@
 #define DWR_EEPROM_TXPOWER_CHANS_2G  14
 #define DWR_EEPROM_BBP_PROM_ENTRIES  16
 #define DWR_LINK_RSSI_INVALID_DBM    (-128)
+#define DWR_CHAN_APPLY_STAGE_NONE                  0
+#define DWR_CHAN_APPLY_STAGE_BBP_PROFILE           1
+#define DWR_CHAN_APPLY_STAGE_RF_SET                2
+#define DWR_CHAN_APPLY_STAGE_POST_SANITY           3
+#define DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_INIT     4
+#define DWR_CHAN_APPLY_STAGE_RECOVERY_BBP_PROFILE  5
+#define DWR_CHAN_APPLY_STAGE_RECOVERY_RF_SET       6
+#define DWR_CHAN_APPLY_STAGE_RECOVERY_POST_SANITY  7
+#define DWR_CHAN_APPLY_ERRCLASS_NONE               0
+#define DWR_CHAN_APPLY_ERRCLASS_INVALID            1
+#define DWR_CHAN_APPLY_ERRCLASS_UNSUPPORTED        2
+#define DWR_CHAN_APPLY_ERRCLASS_TIMEOUT            3
+#define DWR_CHAN_APPLY_ERRCLASS_IO                 4
+#define DWR_CHAN_APPLY_ERRCLASS_SANITY             5
+#define DWR_CHAN_APPLY_ERRCLASS_UNKNOWN            6
+#define DWR_CHAN_APPLY_ORIGIN_NONE                         0
+#define DWR_CHAN_APPLY_ORIGIN_BBP_PROFILE                  1
+#define DWR_CHAN_APPLY_ORIGIN_RF_SET                       2
+#define DWR_CHAN_APPLY_ORIGIN_SANITY_READ_MAC_CSR0         3
+#define DWR_CHAN_APPLY_ORIGIN_SANITY_READ_PHY_CSR4         4
+#define DWR_CHAN_APPLY_ORIGIN_SANITY_READ_BBP0             5
+#define DWR_CHAN_APPLY_ORIGIN_SANITY_READ_BBP3             6
+#define DWR_CHAN_APPLY_ORIGIN_SANITY_PATTERN_INVALID       7
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_BBP_INIT            8
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_BBP_PROFILE         9
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_RF_SET             10
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_MAC_CSR0 11
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_PHY_CSR4 12
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_BBP0   13
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_READ_BBP3   14
+#define DWR_CHAN_APPLY_ORIGIN_RECOVERY_SANITY_PATTERN_INVALID 15
+#define DWR_CHAN_APPLY_ORIGIN_UNKNOWN                     16
+#define DWR_CHAN_APPLY_ORIGIN_MAX                         17
 
 struct dwr_eeprom_bbp_word {
 	u8 reg;
@@ -152,6 +187,41 @@ struct dwr_hw_state {
 	u32 mac_csr0_before_fw;
 	u32 mac_csr0_after_fw;
 	u32 txrx_csr0_before_fw;
+	u32 init_channel_apply_count;
+	u32 runtime_channel_apply_count;
+	u32 channel_apply_first_pass_success_count;
+	u32 channel_apply_failure_count;
+	u32 channel_recovery_attempt_count;
+	u32 channel_recovery_success_count;
+	u32 channel_recovery_failure_count;
+	u32 channel_apply_errclass_invalid_count;
+	u32 channel_apply_errclass_unsupported_count;
+	u32 channel_apply_errclass_timeout_count;
+	u32 channel_apply_errclass_io_count;
+	u32 channel_apply_errclass_sanity_count;
+	u32 channel_apply_errclass_unknown_count;
+	u32 channel_apply_origin_count[DWR_CHAN_APPLY_ORIGIN_MAX];
+	bool last_channel_apply_was_runtime;
+	u8 last_channel_apply_stage;
+	u8 last_channel_apply_channel;
+	u8 last_channel_apply_errclass;
+	u8 last_channel_apply_origin;
+	int last_channel_apply_err;
+	bool last_channel_apply_failure_snapshot_valid;
+	bool last_channel_apply_failure_was_runtime;
+	u8 last_channel_apply_failure_channel;
+	u8 last_channel_apply_failure_stage;
+	u8 last_channel_apply_failure_errclass;
+	u8 last_channel_apply_failure_origin;
+	int last_channel_apply_failure_err;
+	bool last_channel_apply_failure_has_mac_csr0;
+	bool last_channel_apply_failure_has_phy_csr4;
+	bool last_channel_apply_failure_has_bbp0;
+	bool last_channel_apply_failure_has_bbp3;
+	u32 last_channel_apply_failure_mac_csr0;
+	u32 last_channel_apply_failure_phy_csr4;
+	u8 last_channel_apply_failure_bbp0;
+	u8 last_channel_apply_failure_bbp3;
 };
 
 struct dwr_usb_state {
@@ -182,6 +252,7 @@ struct dwr_dev {
 	bool associated;
 	u16 aid;
 	s8 link_rssi_dbm;
+	u8 bbp17_base;
 	u8 vgc_level;
 	struct ieee80211_vif *vif_sta;
 	unsigned int filter_flags;
@@ -206,6 +277,7 @@ int dwr_read_eeprom(struct dwr_dev *dwr, u16 off, void *buf, size_t len);
 int dwr_hw_init(struct dwr_dev *dwr);
 void dwr_hw_stop(struct dwr_dev *dwr);
 int dwr_set_channel(struct dwr_dev *dwr, struct ieee80211_channel *chan);
+int dwr_apply_2ghz_bbp_profile(struct dwr_dev *dwr);
 int dwr_set_macaddr(struct dwr_dev *dwr, const u8 *addr);
 int dwr_set_vgc(struct dwr_dev *dwr, u8 vgc_level);
 int dwr_set_bssid(struct dwr_dev *dwr, const u8 *bssid);
@@ -224,5 +296,6 @@ int dwr_set_rx_timing_defaults(struct dwr_dev *dwr);
 int dwr_read_rx_error_counters(struct dwr_dev *dwr, u16 *fcs_err,
 			       u16 *plcp_err, u16 *physical_err,
 			       u16 *false_cca);
+void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason);
 
 #endif

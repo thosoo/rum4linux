@@ -30,6 +30,7 @@ This is a structural generalization pass, not a claim of broad functional enable
 - firmware upload scaffold and MCU handoff/wait sequence
 - BBP busy/read/write helpers and bounded init defaults
 - RF/channel scaffold for RT2528 2.4GHz path with bounded calibration mapping
+- narrow OpenBSD `rum_select_band()` 2.4GHz subset wired: BBP 17/35/96/97/98/104 + ext_2ghz_lna BBP 75/86/88 + PHY_CSR0 PA-path bit programming
 - bounded post-channel sanity and one bounded recovery attempt
 - bounded TX descriptor path with runtime bulk-OUT submission and mac80211 tx status handoff on URB completion
 - bounded RX scaffolding:
@@ -53,17 +54,26 @@ This is a structural generalization pass, not a claim of broad functional enable
   - conservative TX retry-limit/fallback programming via TXRX_CSR4 (OpenBSD MRR naming and rt73usb OFDM-down/fallback naming treated as aliases for shared bits)
   - TX status reports attempted rate/count but does not claim ACK success without hardware feedback
   - OpenBSD rum(4) path exposes USB completion for TX but no host-visible per-frame ACK/retry result; current Linux port keeps that limitation explicit
+  - advertised/operational TX rates are now narrowed to truthful CCK-only (1/2/5.5/11 Mbps) for the current minimal descriptor path; OFDM TX remains deferred
+  - initial bring-up and runtime channel transitions now use the same bounded 2.4GHz apply path (BBP profile, RF program, post-channel sanity, one bounded recovery attempt)
+  - channel-apply diagnostics now keep bounded counters and last-stage tagging (init/runtime split, first-pass failures, recovery attempt/success/failure, last channel/stage/error)
+  - channel-apply failures now also carry conservative error-class tagging (invalid/unsupported/timeout/io/sanity/unknown) based on existing stage+errno only
+  - channel-apply failures now include conservative error-origin attribution (sanity-read source vs sanity-pattern vs profile/rf/recovery origin) with bounded counters
+  - origin counters are failure-attribution counts only, and the latest failure snapshot is retained (stage/class/origin/errno + any successfully-captured sanity reads)
   - RX CCK rate decode follows rum_rxrate()/rt73 semantics (raw 100kbps values 10/20/55/110) with conservative OFDM PLCP mapping
   - station-stop/disconnect logging now includes source-backed STA_CSR0/STA_CSR1 error counters (FCS/PLCP/physical/false-CCA)
   - RX filter parity tightened to rt73usb station behavior (DROP_ACK_CTS follows FIF_CONTROL; DROP_CONTROL follows FIF_CONTROL|FIF_PSPOLL)
+  - RX software delivery now follows active filter policy for failed-FCS and failed-PLCP/PHY classes: frames are dropped only when policy requests drop, and delivered failures are flagged/counted for mac80211 observability
   - RUN-entry TXRX_CSR4 programming now uses one coherent final path for aliased MRR/OFDM-fallback fields
   - conservative BBP17/VGC tuner is wired for associated station mode using rt73usb-backed inputs (RSSI, FCS, false-CCA); false_cca thresholds are intentionally conservative (>512 up, <100 down), and STA_CSR1 low-16 remains non-policy observability only
+  - BBP17/VGC tuner now uses the runtime 2.4GHz profile baseline (including ext_2ghz_lna offset) rather than a fixed 0x20 base
 
 ## Explicitly incomplete / deferred
 
 - complete TX descriptor and hardware ACK/retry status coverage for all `rum(4)`-family variants
 - confirmed RT2573 host-visible TX-result ingestion path (ACK/retry/failure truth) still not wired in this non-rt2x00 port
 - TX rate programming beyond conservative CCK mappings used by the current minimal descriptor path
+- OFDM RX decode remains conservative/source-backed, but OFDM TX descriptor/status plumbing is intentionally not exposed yet
 - high-confidence RX descriptor validation across additional variants/revisions beyond the current conservative mapping
 - association / operational station behavior
 - full source-backed validation of runtime timing defaults (ACK timeout/TSF offset/EIFS constants) across revisions
@@ -81,6 +91,8 @@ Current RX descriptor assumptions are intentionally narrow and source-backed:
 - OpenBSD `if_rum.c` framing model (USB payload includes descriptor metadata plus frame body).
 
 Any broader bit semantics or per-revision behavior remain `TODO(openbsd-rum-port)`.
+
+`RXD_W0_DROP` remains a broad descriptor bit in Linux rt73 sources; in this narrow port it is treated as PLCP/PHY-failure class for filter-coherence only, and fuller cause mapping remains `TODO(openbsd-rum-port)`.
 
 ## Device-ID and coverage policy
 
