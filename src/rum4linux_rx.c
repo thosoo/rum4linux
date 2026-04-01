@@ -148,13 +148,27 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 	allow_fcs_fail = !!(READ_ONCE(dwr->filter_flags) & FIF_FCSFAIL);
 	allow_plcp_fail = !!(READ_ONCE(dwr->filter_flags) & FIF_PLCPFAIL);
 
-	/* TODO(openbsd-rum-port): confirm frame_offset semantics for all rum(4)-family revisions. */
-	min_total = DWR_RX_DESC_LEN + frame_offset + data_len;
+	/*
+	 * OpenBSD if_rum.c and Linux rt73usb both treat RT2573 RX frame start
+	 * as immediately after the fixed descriptor (24 bytes), without using
+	 * descriptor offset as an additional start adjustment.
+	 * TODO(openbsd-rum-port): confirm non-zero offset semantics across
+	 * broader rum(4)-family variants before relaxing this guard.
+	 */
+	if (frame_offset) {
+		atomic_inc(&dwr->rx.stats.drop_bad_desc);
+		dwr_dbg(&dwr->usb.intf->dev,
+			"rx urb[%u] unsupported non-zero frame_offset=%u word1=0x%08x\n",
+			slot->index, frame_offset, word1);
+		return false;
+	}
+
+	min_total = DWR_RX_DESC_LEN + data_len;
 	if (!data_len || min_total > actual_len || min_total > DWR_RX_BUF_SIZE) {
 		atomic_inc(&dwr->rx.stats.drop_bad_desc);
 		dwr_dbg(&dwr->usb.intf->dev,
-			"rx urb[%u] bad desc len=%d data_len=%u frame_off=%u min_total=%d\n",
-			slot->index, actual_len, data_len, frame_offset, min_total);
+			"rx urb[%u] bad desc len=%d data_len=%u min_total=%d\n",
+			slot->index, actual_len, data_len, min_total);
 		return false;
 	}
 
@@ -194,7 +208,7 @@ static bool dwr_rx_parse_desc(struct dwr_dev *dwr, struct dwr_rx_slot *slot,
 		return false;
 	}
 
-	*frame_off = DWR_RX_DESC_LEN + frame_offset;
+	*frame_off = DWR_RX_DESC_LEN;
 	/*
 	 * OpenBSD if_rum.c uses RX descriptor byte-count directly as frame
 	 * length, and Linux rt73usb also trims skb to RXD_W0_DATABYTE_COUNT
