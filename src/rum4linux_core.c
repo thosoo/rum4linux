@@ -45,6 +45,20 @@ static void dwr_enter_run_state(struct dwr_dev *dwr,
 				struct ieee80211_bss_conf *info);
 static void dwr_log_sta_rx_counters(struct dwr_dev *dwr, const char *reason);
 
+static bool dwr_rf_rev_supported_narrow(u8 rf_rev)
+{
+	switch (rf_rev) {
+	case DWR_RF_2528:
+		return true;
+	case DWR_RF_2527:
+	case DWR_RF_5225:
+	case DWR_RF_5226:
+		return false;
+	default:
+		return false;
+	}
+}
+
 static int dwr_detect_endpoints(struct dwr_dev *dwr)
 {
 	struct usb_host_interface *alts = dwr->usb.intf->cur_altsetting;
@@ -502,7 +516,6 @@ static int dwr_usb_probe(struct usb_interface *intf,
 	hw->max_report_rates = 1;
 	hw->extra_tx_headroom = 0;
 	hw->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
-	hw->wiphy->bands[NL80211_BAND_2GHZ] = &dwr_band_2ghz;
 	hw->flags = IEEE80211_HW_SIGNAL_DBM |
 		    IEEE80211_HW_SUPPORTS_PS;
 
@@ -516,6 +529,19 @@ static int dwr_usb_probe(struct usb_interface *intf,
 			 ret);
 	}
 	SET_IEEE80211_PERM_ADDR(hw, dwr->mac_addr);
+
+	if (!dwr_rf_rev_supported_narrow(dwr->eeprom.rf_rev)) {
+		dwr_warn(&intf->dev,
+			 "unsupported rf_rev=%u for current bring-up; refusing attach for %04x:%04x\n",
+			 dwr->eeprom.rf_rev, id->idVendor, id->idProduct);
+		/*
+		 * TODO(openbsd-rum-port): implement source-backed RF bring-up
+		 * paths for RT2527/RT5225/RT5226 and then widen this gate.
+		 */
+		ret = -EOPNOTSUPP;
+		goto err_free_hw;
+	}
+	hw->wiphy->bands[NL80211_BAND_2GHZ] = &dwr_band_2ghz;
 
 	usb_set_intfdata(intf, dwr);
 
@@ -561,7 +587,48 @@ static void dwr_usb_disconnect(struct usb_interface *intf)
 }
 
 static const struct usb_device_id dwr_usb_ids[] = {
-	{ USB_DEVICE(DWR_USB_VID, DWR_USB_PID) },
+	/*
+	 * OpenBSD if_rum.c rum_devs[] surface plus RT73 family aliases from
+	 * Linux rt73usb device table; attach is still truthfully gated at probe.
+	 */
+	{ USB_DEVICE(0x07b8, 0xb21b) }, { USB_DEVICE(0x07b8, 0xb21c) },
+	{ USB_DEVICE(0x07b8, 0xb21d) }, { USB_DEVICE(0x07b8, 0xb21e) },
+	{ USB_DEVICE(0x07b8, 0xb21f) }, { USB_DEVICE(0x14b2, 0x3c10) },
+	{ USB_DEVICE(0x148f, 0x9021) }, { USB_DEVICE(0x0eb0, 0x9021) },
+	{ USB_DEVICE(0x18c5, 0x0002) }, { USB_DEVICE(0x1690, 0x0722) },
+	{ USB_DEVICE(0x0b05, 0x1723) }, { USB_DEVICE(0x0b05, 0x1724) },
+	{ USB_DEVICE(0x050d, 0x7050) }, { USB_DEVICE(0x050d, 0x705a) },
+	{ USB_DEVICE(0x050d, 0x905b) }, { USB_DEVICE(0x050d, 0x905c) },
+	{ USB_DEVICE(0x1631, 0xc019) }, { USB_DEVICE(0x08dd, 0x0120) },
+	{ USB_DEVICE(0x0411, 0x00d8) }, { USB_DEVICE(0x0411, 0x00d9) },
+	{ USB_DEVICE(0x0411, 0x00e6) }, { USB_DEVICE(0x0411, 0x00f4) },
+	{ USB_DEVICE(0x0411, 0x0116) }, { USB_DEVICE(0x0411, 0x0119) },
+	{ USB_DEVICE(0x0411, 0x0137) }, { USB_DEVICE(0x178d, 0x02be) },
+	{ USB_DEVICE(0x1371, 0x9022) }, { USB_DEVICE(0x1371, 0x9032) },
+	{ USB_DEVICE(0x14b2, 0x3c22) }, { USB_DEVICE(0x07aa, 0x002e) },
+	{ USB_DEVICE(0x07d1, 0x3c03) }, { USB_DEVICE(0x07d1, 0x3c04) },
+	{ USB_DEVICE(0x07d1, 0x3c06) }, { USB_DEVICE(0x07d1, 0x3c07) },
+	{ USB_DEVICE(0x7392, 0x7318) }, { USB_DEVICE(0x7392, 0x7618) },
+	{ USB_DEVICE(0x1740, 0x3701) }, { USB_DEVICE(0x15a9, 0x0004) },
+	{ USB_DEVICE(0x1044, 0x8008) }, { USB_DEVICE(0x1044, 0x800a) },
+	{ USB_DEVICE(0x1472, 0x0009) }, { USB_DEVICE(0x06f8, 0xe002) },
+	{ USB_DEVICE(0x06f8, 0xe010) }, { USB_DEVICE(0x06f8, 0xe020) },
+	{ USB_DEVICE(0x13b1, 0x0020) }, { USB_DEVICE(0x13b1, 0x0023) },
+	{ USB_DEVICE(0x13b1, 0x0028) }, { USB_DEVICE(0x0db0, 0x4600) },
+	{ USB_DEVICE(0x0db0, 0x6877) }, { USB_DEVICE(0x0db0, 0x6874) },
+	{ USB_DEVICE(0x0db0, 0xa861) }, { USB_DEVICE(0x0db0, 0xa874) },
+	{ USB_DEVICE(0x1b75, 0x7318) }, { USB_DEVICE(0x04bb, 0x093d) },
+	{ USB_DEVICE(0x148f, 0x2573) }, { USB_DEVICE(0x148f, 0x2671) },
+	{ USB_DEVICE(0x0812, 0x3101) }, { USB_DEVICE(0x18e8, 0x6196) },
+	{ USB_DEVICE(0x18e8, 0x6229) }, { USB_DEVICE(0x18e8, 0x6238) },
+	{ USB_DEVICE(0x04e8, 0x4471) }, { USB_DEVICE(0x1740, 0x7100) },
+	{ USB_DEVICE(0x0df6, 0x0024) }, { USB_DEVICE(0x0df6, 0x0027) },
+	{ USB_DEVICE(0x0df6, 0x002f) }, { USB_DEVICE(0x0df6, 0x90ac) },
+	{ USB_DEVICE(0x0df6, 0x9712) }, { USB_DEVICE(0x0769, 0x31f3) },
+	{ USB_DEVICE(0x6933, 0x5001) }, { USB_DEVICE(0x0471, 0x200a) },
+	{ USB_DEVICE(0x2019, 0xab01) }, { USB_DEVICE(0x2019, 0xab50) },
+	{ USB_DEVICE(0x7167, 0x3840) }, { USB_DEVICE(0x0cde, 0x001c) },
+	{ USB_DEVICE(0x0586, 0x3415) },
 	{ }
 };
 MODULE_DEVICE_TABLE(usb, dwr_usb_ids);

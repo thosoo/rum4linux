@@ -64,6 +64,7 @@ This is a structural generalization pass, not a claim of broad functional enable
   - channel-apply failure diagnostics now also retain one bounded delta snapshot that compares latest retained failure vs the immediately previous retained failure (runtime/init, channel/stage/class/origin/errno, and sanity value state as missing/same/changed)
   - RX CCK rate decode follows rum_rxrate()/rt73 semantics (raw 100kbps values 10/20/55/110); OFDM RX frames are delivered conservatively with 1 Mbps fallback metadata while the narrow supported-rate table remains CCK-only
   - station-stop/disconnect logging now includes source-backed STA_CSR0/STA_CSR1 error counters (FCS/PLCP/physical/false-CCA)
+  - USB ID match surface is widened to the broader rum/rt73 family table, but probe keeps truthful attach gating by refusing unsupported RF revisions (currently only rf_rev=2528 proceeds to register/start paths)
   - RX filter parity tightened to rt73usb station behavior (DROP_ACK_CTS follows FIF_CONTROL; DROP_CONTROL follows FIF_CONTROL|FIF_PSPOLL)
   - RX software delivery now follows active filter policy for failed-FCS and failed-PLCP/PHY classes: frames are dropped only when policy requests drop, and delivered failures are flagged/counted for mac80211 observability
   - RX failure taxonomy is now tightened slightly for RT2573: explicit RX_CRC_ERROR remains the only concrete FCS class, while RX_DROP is treated as broader non-CRC descriptor-drop (not asserted as pure PLCP/PHY), still mapped through FIF_PLCPFAIL/RX failed-PLCP flag as a conservative policy proxy
@@ -86,7 +87,7 @@ This is a structural generalization pass, not a claim of broad functional enable
 - full source-backed validation of runtime timing defaults across revisions is still incomplete; current tightening is intentionally narrow to RT2573 station-path values confirmed from OpenBSD sources
 - hardware AID programming remains unresolved; primary-source review of OpenBSD `if_rum.c` + `if_rumreg.h` did not confirm a dedicated RT2573 station-path AID register/field, so current path keeps AID software-tracked with TODO(openbsd-rum-port)
 - fake-join tx-rate init from if_rum.c has no direct mac80211 equivalent in current narrow path and remains intentionally unported
-- broad USB ID enumeration and per-device bring-up policies
+- broad per-device bring-up policies after USB ID match (RF2527/RF5225/RF5226 still intentionally rejected with `TODO(openbsd-rum-port)`)
 - broad firmware naming certainty across the whole family
 
 Uncertain parts should stay tagged as `TODO(openbsd-rum-port)` until confirmed from primary sources.

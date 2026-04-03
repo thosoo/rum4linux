@@ -73,6 +73,7 @@ All uncertain behavior remains tagged as `TODO(openbsd-rum-port)`.
 ## Safety defaults
 
 - Default safety gate is `bind=0` (no attach by default).
+- USB ID match table now covers the broader RT73/rum(4)-family surface, but attach is still truthfully gated at probe: unsupported RF revisions are rejected with `-EOPNOTSUPP` until source-backed bring-up exists.
 - Functional hardware verification is intentionally deferred at this stage.
 
 ## Layout
