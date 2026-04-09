@@ -49,11 +49,10 @@ static bool dwr_rf_rev_supported_narrow(u8 rf_rev)
 {
 	switch (rf_rev) {
 	case DWR_RF_2528:
-		return true;
 	case DWR_RF_2527:
 	case DWR_RF_5225:
 	case DWR_RF_5226:
-		return false;
+		return true;
 	default:
 		return false;
 	}
@@ -535,8 +534,8 @@ static int dwr_usb_probe(struct usb_interface *intf,
 			 "unsupported rf_rev=%u for current bring-up; refusing attach for %04x:%04x\n",
 			 dwr->eeprom.rf_rev, id->idVendor, id->idProduct);
 		/*
-		 * TODO(openbsd-rum-port): implement source-backed RF bring-up
-		 * paths for RT2527/RT5225/RT5226 and then widen this gate.
+		 * TODO(openbsd-rum-port): add source-backed 5GHz channel profile
+		 * and full per-RF runtime tuning before broad band advertisement.
 		 */
 		ret = -EOPNOTSUPP;
 		goto err_free_hw;
