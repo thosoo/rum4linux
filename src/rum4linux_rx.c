@@ -371,6 +371,7 @@ static void dwr_rx_complete(struct urb *urb)
 		dwr_dbg(&dwr->usb.intf->dev,
 			"rx urb[%u] completion error=%d len=%d\n",
 			slot->index, status, urb->actual_length);
+		dwr_request_reset(dwr, "rx-complete", status);
 	}
 
 	if (READ_ONCE(dwr->usb.running))

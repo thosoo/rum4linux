@@ -3,6 +3,7 @@
 #include <linux/usb.h>
 #include <linux/usb/ch9.h>
 #include <linux/etherdevice.h>
+#include <linux/string.h>
 #include <linux/ratelimit.h>
 #include <net/mac80211.h>
 #include "rum4linux_hw.h"
@@ -48,18 +49,25 @@ static struct ieee80211_supported_band dwr_band_2ghz = {
 	.n_bitrates = ARRAY_SIZE(dwr_rates_2ghz),
 };
 
-static void dwr_leave_run_state(struct dwr_dev *dwr, const char *reason);
-static void dwr_enter_run_state(struct dwr_dev *dwr,
-				struct ieee80211_bss_conf *info);
+static int dwr_leave_run_state(struct dwr_dev *dwr, const char *reason);
+static int dwr_enter_run_state(struct dwr_dev *dwr,
+			       struct ieee80211_bss_conf *info);
+static int dwr_restore_started_state(struct dwr_dev *dwr);
 static void dwr_log_sta_rx_counters(struct dwr_dev *dwr, const char *reason);
+static void dwr_build_bss_conf_shadow(struct dwr_dev *dwr,
+				      const struct ieee80211_bss_conf *src,
+				      struct ieee80211_bss_conf *dst);
+static void dwr_log_reset_summary(struct dwr_dev *dwr, const char *reason);
+#define DWR_TX_WATCHDOG_PERIOD_MS 1000
+#define DWR_TX_WATCHDOG_TIMEOUT_MS 5000
+#define DWR_RESET_STORM_WINDOW_MS 10000
+#define DWR_RESET_STORM_MAX_IN_WINDOW 4
+#define DWR_RESET_STORM_COOLDOWN_MS 5000
 
 static bool dwr_rf_rev_supported_narrow(u8 rf_rev)
 {
 	switch (rf_rev) {
 	case DWR_RF_2528:
-	case DWR_RF_2527:
-	case DWR_RF_5225:
-	case DWR_RF_5226:
 		return true;
 	default:
 		return false;
@@ -123,7 +131,139 @@ static int dwr_detect_endpoints(struct dwr_dev *dwr)
 
 static void dwr_reset_work(struct work_struct *work)
 {
-	/* TODO(openbsd-rum-port): device reset/reinit path after USB or MCU fault. */
+	struct dwr_dev *dwr = container_of(work, struct dwr_dev, reset_work);
+	struct ieee80211_bss_conf shadow = {};
+	bool reenter_run;
+	bool attempted = false;
+	int ret;
+
+	mutex_lock(&dwr->reset_mutex);
+	if (test_bit(DWR_RESET_F_BLOCKED, &dwr->reset_flags) ||
+	    !dwr->registered_hw || !READ_ONCE(dwr->usb.running))
+		goto done;
+
+	while (test_and_clear_bit(DWR_RESET_F_REQUESTED, &dwr->reset_flags)) {
+		set_bit(DWR_RESET_F_IN_PROGRESS, &dwr->reset_flags);
+		attempted = true;
+		dwr->reset_last_stage = DWR_RESET_STAGE_IDLE;
+		dwr->reset_last_reassoc = false;
+		dwr->reset_last_replay_mode = DWR_RESET_REPLAY_NONE;
+		dwr_warn(&dwr->usb.intf->dev, "reset: begin reason=%s err=%d\n",
+			 dwr->reset_last_reason ? dwr->reset_last_reason : "unknown",
+			 dwr->reset_last_err);
+
+		reenter_run = dwr->associated && dwr->bssid_valid && dwr->bss_beacon_int;
+		if (reenter_run)
+			dwr_build_bss_conf_shadow(dwr, NULL, &shadow);
+
+		dwr->reset_last_stage = DWR_RESET_STAGE_LEAVE_RUN;
+		dwr_leave_run_state(dwr, "reset");
+		WRITE_ONCE(dwr->usb.running, false);
+		cancel_delayed_work_sync(&dwr->tx_watchdog_work);
+		dwr->tx_cancel_reason = DWR_TX_CANCEL_RESET;
+			dwr_tx_cancel_pending(dwr);
+			dwr_rx_stop(dwr);
+
+		dwr->reset_last_stage = DWR_RESET_STAGE_HW_STOP;
+		dwr_hw_stop(dwr);
+		dwr->reset_last_stage = DWR_RESET_STAGE_HW_INIT;
+		ret = dwr_hw_init(dwr);
+		if (ret)
+			goto fail;
+		dwr->reset_last_stage = DWR_RESET_STAGE_RESTORE_STARTED;
+		ret = dwr_restore_started_state(dwr);
+		if (ret)
+			goto fail;
+		dwr->reset_last_replay_mode = DWR_RESET_REPLAY_UNASSOC;
+
+		WRITE_ONCE(dwr->usb.running, true);
+		dwr->reset_last_stage = DWR_RESET_STAGE_RX_START;
+		ret = dwr_rx_start(dwr);
+		if (ret) {
+			WRITE_ONCE(dwr->usb.running, false);
+			goto fail;
+		}
+
+		if (reenter_run) {
+			dwr->reset_last_stage = DWR_RESET_STAGE_REASSOC_REENTER;
+			ret = dwr_enter_run_state(dwr, &shadow);
+			if (ret)
+				goto fail;
+			dwr->reset_last_reassoc = true;
+			dwr->reset_last_replay_mode = DWR_RESET_REPLAY_ASSOC_REENTER;
+		}
+
+		dwr->reset_success_count++;
+		dwr_info(&dwr->usb.intf->dev, "reset: recovery complete\n");
+		clear_bit(DWR_RESET_F_IN_PROGRESS, &dwr->reset_flags);
+	}
+	goto done;
+
+fail:
+	dwr->reset_failure_count++;
+	dwr->reset_last_fail_stage = dwr->reset_last_stage;
+	dwr_err(&dwr->usb.intf->dev,
+		"reset: recovery failed stage=%u ret=%d\n",
+		dwr->reset_last_stage, ret);
+	WRITE_ONCE(dwr->usb.running, false);
+	dwr_leave_run_state(dwr, "reset-failed");
+	cancel_delayed_work_sync(&dwr->tx_watchdog_work);
+	dwr->tx_cancel_reason = DWR_TX_CANCEL_RESET;
+	dwr_tx_cancel_pending(dwr);
+	dwr_rx_stop(dwr);
+	dwr_hw_stop(dwr);
+	clear_bit(DWR_RESET_F_IN_PROGRESS, &dwr->reset_flags);
+	clear_bit(DWR_RESET_F_REQUESTED, &dwr->reset_flags);
+
+done:
+	if (attempted)
+		dwr_log_reset_summary(dwr, "reset_work");
+	mutex_unlock(&dwr->reset_mutex);
+}
+
+static void dwr_tx_watchdog_workfn(struct work_struct *work)
+{
+	struct dwr_dev *dwr =
+		container_of(to_delayed_work(work), struct dwr_dev, tx_watchdog_work);
+	unsigned long timeout = msecs_to_jiffies(DWR_TX_WATCHDOG_TIMEOUT_MS);
+	int inflight;
+
+	if (!READ_ONCE(dwr->usb.running) || test_bit(DWR_RESET_F_BLOCKED, &dwr->reset_flags))
+		return;
+	inflight = atomic_read(&dwr->tx_inflight);
+	if (inflight <= 0) {
+		dwr->tx_watchdog_clear_count++;
+		return;
+	}
+	if (time_after(jiffies, dwr->tx_last_progress_jiffies + timeout)) {
+		dwr->tx_watchdog_fire_count++;
+		dwr_warn(&dwr->usb.intf->dev,
+			 "tx watchdog timeout inflight=%d stalled_ms=%u\n",
+			 inflight, jiffies_to_msecs(jiffies - dwr->tx_last_progress_jiffies));
+		dwr_request_reset(dwr, "tx-watchdog", -ETIMEDOUT);
+	}
+
+	if (atomic_read(&dwr->tx_inflight) > 0 &&
+	    !test_bit(DWR_RESET_F_BLOCKED, &dwr->reset_flags))
+		schedule_delayed_work(&dwr->tx_watchdog_work,
+				      msecs_to_jiffies(DWR_TX_WATCHDOG_PERIOD_MS));
+}
+
+void dwr_tx_progress(struct dwr_dev *dwr, bool inflight_nonzero)
+{
+	if (!dwr)
+		return;
+	dwr->tx_last_progress_jiffies = jiffies;
+	if (!READ_ONCE(dwr->usb.running) || test_bit(DWR_RESET_F_BLOCKED, &dwr->reset_flags))
+		return;
+	if (inflight_nonzero) {
+		dwr->tx_watchdog_arm_count++;
+		schedule_delayed_work(&dwr->tx_watchdog_work,
+				      msecs_to_jiffies(DWR_TX_WATCHDOG_PERIOD_MS));
+	} else {
+		cancel_delayed_work(&dwr->tx_watchdog_work);
+		dwr->tx_watchdog_clear_count++;
+	}
 }
 
 static void dwr_link_tuner_workfn(struct work_struct *work)
@@ -191,13 +331,17 @@ static int dwr_mac_start(struct ieee80211_hw *hw)
 	int ret;
 
 	dwr_info(&dwr->usb.intf->dev, "mac80211 start\n");
+	clear_bit(DWR_RESET_F_BLOCKED, &dwr->reset_flags);
+	atomic_set(&dwr->tx_inflight, 0);
+	clear_bit(DWR_TX_F_QUEUES_STOPPED, &dwr->tx_flags);
+	dwr->tx_last_progress_jiffies = jiffies;
+	dwr->reset_window_jiffies = 0;
+	dwr->reset_window_count = 0;
+	dwr->reset_cooldown_until = 0;
 	ret = dwr_hw_init(dwr);
 	if (ret)
 		return ret;
-	ret = dwr_set_macaddr(dwr, dwr->mac_addr);
-	if (ret)
-		return ret;
-	ret = dwr_set_rx_filter(dwr, dwr->filter_flags);
+	ret = dwr_restore_started_state(dwr);
 	if (ret)
 		return ret;
 
@@ -216,15 +360,22 @@ static void dwr_mac_stop(struct ieee80211_hw *hw, bool suspend)
 	struct dwr_dev *dwr = hw_to_dwr(hw);
 
 	dwr_info(&dwr->usb.intf->dev, "mac80211 stop suspend=%d\n", suspend);
+	set_bit(DWR_RESET_F_BLOCKED, &dwr->reset_flags);
 	dwr->usb.running = false;
-	dwr_leave_run_state(dwr, "stop");
+	if (dwr_leave_run_state(dwr, "stop"))
+		dwr_dbg(&dwr->usb.intf->dev, "run leave failed on stop\n");
+	cancel_delayed_work_sync(&dwr->tx_watchdog_work);
 	dwr_rx_stop(dwr);
 	dwr_rx_log_summary(dwr, "mac_stop");
 	dwr_log_channel_apply_summary(dwr, "mac_stop");
 	dwr_log_sta_rx_counters(dwr, "mac_stop");
+	dwr->tx_cancel_reason = DWR_TX_CANCEL_TEARDOWN;
 	dwr_tx_cancel_pending(dwr);
 	dwr_hw_stop(dwr);
 	cancel_work_sync(&dwr->reset_work);
+	clear_bit(DWR_RESET_F_REQUESTED, &dwr->reset_flags);
+	clear_bit(DWR_RESET_F_IN_PROGRESS, &dwr->reset_flags);
+	dwr_log_reset_summary(dwr, "mac_stop");
 }
 
 static void dwr_mac_tx(struct ieee80211_hw *hw,
@@ -246,10 +397,33 @@ static int dwr_mac_config(struct ieee80211_hw *hw, u32 changed)
 {
 	struct dwr_dev *dwr = hw_to_dwr(hw);
 	struct ieee80211_conf *conf = &hw->conf;
+	int ret = 0;
 
 	if (changed & IEEE80211_CONF_CHANGE_CHANNEL)
-		return dwr_set_channel(dwr, conf->chandef.chan);
-	return 0;
+		ret = dwr_set_channel(dwr, conf->chandef.chan);
+	if ((changed & IEEE80211_CONF_CHANGE_CHANNEL) && !dwr->associated && !ret)
+		dwr->started_refresh_channel_count++;
+	if (ret)
+		return ret;
+
+	if (READ_ONCE(dwr->usb.running) && !dwr->associated &&
+	    (changed & IEEE80211_CONF_CHANGE_RETRY_LIMITS)) {
+		dwr->started_refresh_count++;
+		if (changed & IEEE80211_CONF_CHANGE_RETRY_LIMITS)
+			dwr->started_refresh_retry_count++;
+		ret = dwr_restore_started_state(dwr);
+		if (ret) {
+			dwr->started_refresh_fail_count++;
+			dwr_warn(&dwr->usb.intf->dev,
+				 "started-state refresh failed changed=0x%x err=%d\n",
+				 changed, ret);
+		} else {
+			dwr_dbg(&dwr->usb.intf->dev,
+				"started-state refresh applied changed=0x%x\n", changed);
+		}
+	}
+
+	return ret;
 }
 
 static void dwr_update_assoc_aid(struct dwr_dev *dwr, bool associated, u16 aid)
@@ -258,22 +432,138 @@ static void dwr_update_assoc_aid(struct dwr_dev *dwr, bool associated, u16 aid)
 	dwr->aid = associated ? aid : 0;
 }
 
-static void dwr_leave_run_state(struct dwr_dev *dwr, const char *reason)
+static void dwr_build_bss_conf_shadow(struct dwr_dev *dwr,
+				      const struct ieee80211_bss_conf *src,
+				      struct ieee80211_bss_conf *dst)
 {
+	memset(dst, 0, sizeof(*dst));
+	if (src) {
+		dst->beacon_int = src->beacon_int;
+		dst->basic_rates = src->basic_rates;
+		dst->use_short_preamble = src->use_short_preamble;
+		dst->use_short_slot = src->use_short_slot;
+		ether_addr_copy(dst->bssid, src->bssid);
+		return;
+	}
+
+	dst->beacon_int = dwr->bss_beacon_int;
+	dst->basic_rates = dwr->bss_basic_rates;
+	dst->use_short_preamble = dwr->bss_use_short_preamble;
+	dst->use_short_slot = dwr->bss_use_short_slot;
+	if (dwr->bssid_valid)
+		ether_addr_copy(dst->bssid, dwr->bssid);
+}
+
+void dwr_request_reset(struct dwr_dev *dwr, const char *reason, int err)
+{
+	unsigned long now = jiffies;
+	unsigned long window = msecs_to_jiffies(DWR_RESET_STORM_WINDOW_MS);
+
+	if (!dwr || !dwr->registered_hw || !READ_ONCE(dwr->usb.running) ||
+	    test_bit(DWR_RESET_F_BLOCKED, &dwr->reset_flags))
+		return;
+	if (time_before(now, dwr->reset_cooldown_until)) {
+		dwr->reset_suppressed_count++;
+		if (__ratelimit(&net_ratelimit_state))
+			dwr_warn(&dwr->usb.intf->dev,
+				 "reset suppressed (cooldown) reason=%s err=%d\n",
+				 reason, err);
+		return;
+	}
+	if (!dwr->reset_window_jiffies ||
+	    time_after(now, dwr->reset_window_jiffies + window)) {
+		dwr->reset_window_jiffies = now;
+		dwr->reset_window_count = 0;
+	}
+	dwr->reset_window_count++;
+	if (dwr->reset_window_count > DWR_RESET_STORM_MAX_IN_WINDOW) {
+		dwr->reset_cooldown_until = now + msecs_to_jiffies(DWR_RESET_STORM_COOLDOWN_MS);
+		dwr->reset_suppressed_count++;
+		dwr_warn(&dwr->usb.intf->dev,
+			 "reset storm detected, entering cooldown ms=%u reason=%s\n",
+			 DWR_RESET_STORM_COOLDOWN_MS, reason);
+		return;
+	}
+
+	dwr->reset_last_reason = reason;
+	dwr->reset_last_err = err;
+	dwr->reset_req_total++;
+	if (!strcmp(reason, "tx-submit"))
+		dwr->reset_req_tx_submit++;
+	else if (!strcmp(reason, "tx-complete"))
+		dwr->reset_req_tx_complete++;
+	else if (!strcmp(reason, "rx-complete"))
+		dwr->reset_req_rx_complete++;
+	set_bit(DWR_RESET_F_REQUESTED, &dwr->reset_flags);
+	schedule_work(&dwr->reset_work);
+}
+
+static int dwr_restore_started_state(struct dwr_dev *dwr)
+{
+	struct ieee80211_channel *chan = dwr->hw->conf.chandef.chan;
+	u8 short_retry = dwr->hw->conf.short_frame_max_tx_count ?: 7;
+	u8 long_retry = dwr->hw->conf.long_frame_max_tx_count ?: 7;
+	int ret;
+
+	if (chan) {
+		ret = dwr_set_channel(dwr, chan);
+		if (ret)
+			return ret;
+	}
+	ret = dwr_set_macaddr(dwr, dwr->mac_addr);
+	if (ret)
+		return ret;
+	ret = dwr_set_rx_filter(dwr, dwr->filter_flags);
+	if (ret)
+		return ret;
+	ret = dwr_set_rx_timing_defaults(dwr);
+	if (ret)
+		return ret;
+	ret = dwr_set_erp_timing(dwr,
+				 !!(dwr->hw->conf.flags & IEEE80211_CONF_SHORT_PREAMBLE),
+				 dwr->bss_use_short_slot ?
+				 DWR_RT2573_SLOT_TIME_SHORT :
+				 DWR_RT2573_SLOT_TIME_LONG,
+				 DWR_RT2573_MAC_CSR8_SIFS_DEFAULT,
+				 DWR_RT2573_MAC_CSR8_EIFS_DEFAULT);
+	if (ret)
+		return ret;
+	ret = dwr_set_retry_limits(dwr, short_retry, long_retry, true, 0, true);
+	if (ret)
+		return ret;
+	ret = dwr_set_basic_rates(dwr, dwr->bss_basic_rates);
+	if (ret)
+		return ret;
+	ret = dwr_abort_tsf_sync(dwr);
+	if (ret)
+		return ret;
+	return dwr_clear_bssid(dwr);
+}
+
+static int dwr_leave_run_state(struct dwr_dev *dwr, const char *reason)
+{
+	int first_err = 0;
 	int ret;
 
 	dwr_update_assoc_aid(dwr, false, 0);
 	WRITE_ONCE(dwr->link_rssi_dbm, DWR_LINK_RSSI_INVALID_DBM);
 	cancel_delayed_work_sync(&dwr->link_tuner_work);
 	ret = dwr_abort_tsf_sync(dwr);
-	if (ret)
+	if (ret) {
 		dwr_dbg(&dwr->usb.intf->dev, "abort tsf sync failed (%s): %d\n", reason, ret);
+		if (!first_err)
+			first_err = ret;
+	}
 	ret = dwr_clear_bssid(dwr);
-	if (ret)
+	if (ret) {
 		dwr_dbg(&dwr->usb.intf->dev, "clear bssid failed (%s): %d\n", reason, ret);
+		if (!first_err)
+			first_err = ret;
+	}
+	return first_err;
 }
 
-static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *info)
+static int dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *info)
 {
 	struct ieee80211_channel *chan = dwr->hw->conf.chandef.chan;
 	u8 short_retry = dwr->hw->conf.short_frame_max_tx_count;
@@ -290,7 +580,7 @@ static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *
 	if (chan) {
 		ret = dwr_set_channel(dwr, chan);
 		if (ret)
-			dwr_dbg(&dwr->usb.intf->dev, "run enter set channel failed: %d\n", ret);
+			return ret;
 	}
 
 	ret = dwr_set_erp_timing(dwr, info->use_short_preamble,
@@ -300,28 +590,27 @@ static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *
 				 DWR_RT2573_MAC_CSR8_SIFS_DEFAULT,
 				 DWR_RT2573_MAC_CSR8_EIFS_DEFAULT);
 	if (ret)
-		dwr_dbg(&dwr->usb.intf->dev, "run enter erp timing failed: %d\n", ret);
+		return ret;
 	ret = dwr_set_retry_limits(dwr, short_retry, long_retry, true, 0, true);
 	if (ret)
-		dwr_dbg(&dwr->usb.intf->dev, "run enter retry limits failed: %d\n", ret);
+		return ret;
 	ret = dwr_set_basic_rates(dwr, info->basic_rates);
 	if (ret)
-		dwr_dbg(&dwr->usb.intf->dev, "run enter basic rates failed: %d\n", ret);
+		return ret;
 	if (have_valid_bssid) {
 		ret = dwr_set_bssid(dwr, info->bssid);
 		if (ret)
-			dwr_dbg(&dwr->usb.intf->dev, "run enter bssid failed: %d\n", ret);
+			return ret;
 	} else {
 		ret = dwr_clear_bssid(dwr);
 		if (ret)
-			dwr_dbg(&dwr->usb.intf->dev,
-				"run enter clear invalid bssid failed: %d\n", ret);
+			return ret;
 	}
 
 	if (!enable_tsf) {
 		ret = dwr_abort_tsf_sync(dwr);
 		if (ret)
-			dwr_dbg(&dwr->usb.intf->dev, "run enter abort tsf sync failed: %d\n", ret);
+			return ret;
 		/*
 		 * OpenBSD rum_enable_tsf_sync() consumes station BSS interval.
 		 * TODO(openbsd-rum-port): confirm whether zero beacon interval
@@ -330,17 +619,18 @@ static void dwr_enter_run_state(struct dwr_dev *dwr, struct ieee80211_bss_conf *
 	} else {
 		ret = dwr_set_tsf_sync(dwr, true, info->beacon_int);
 		if (ret)
-			dwr_dbg(&dwr->usb.intf->dev, "run enter tsf sync failed: %d\n", ret);
+			return ret;
 	}
 	ret = dwr_set_vgc(dwr, dwr->bbp17_base);
 	if (ret)
-		dwr_dbg(&dwr->usb.intf->dev, "run enter set vgc failed: %d\n", ret);
+		return ret;
 	WRITE_ONCE(dwr->link_rssi_dbm, DWR_LINK_RSSI_INVALID_DBM);
 	cancel_delayed_work_sync(&dwr->link_tuner_work);
 	if (READ_ONCE(dwr->usb.running) && READ_ONCE(dwr->associated))
 		schedule_delayed_work(&dwr->link_tuner_work, msecs_to_jiffies(2000));
 
 	/* TODO(openbsd-rum-port): fake-join tx-rate initialization from if_rum.c has no direct mac80211 equivalent here. */
+	return 0;
 }
 
 static void dwr_log_sta_rx_counters(struct dwr_dev *dwr, const char *reason)
@@ -360,17 +650,52 @@ static void dwr_log_sta_rx_counters(struct dwr_dev *dwr, const char *reason)
 		 reason, fcs_err, plcp_err, physical_err, false_cca);
 }
 
+static void dwr_log_reset_summary(struct dwr_dev *dwr, const char *reason)
+{
+	dwr_info(&dwr->usb.intf->dev,
+		 "reset summary (%s): req_total=%u req_tx_submit=%u req_tx_complete=%u req_rx_complete=%u ok=%u fail=%u suppressed=%u last_reason=%s last_err=%d last_stage=%u last_fail_stage=%u replay_mode=%u last_reassoc=%u refresh={ok:%u fail:%u chan:%u retry:%u filter:%u} cooldown_active=%u in_progress=%u pending=%u blocked=%u\n",
+		 reason,
+		 dwr->reset_req_total,
+		 dwr->reset_req_tx_submit,
+		 dwr->reset_req_tx_complete,
+		 dwr->reset_req_rx_complete,
+		 dwr->reset_success_count,
+		 dwr->reset_failure_count,
+		 dwr->reset_suppressed_count,
+		 dwr->reset_last_reason ? dwr->reset_last_reason : "none",
+		 dwr->reset_last_err,
+		 dwr->reset_last_stage,
+		 dwr->reset_last_fail_stage,
+		 dwr->reset_last_replay_mode,
+		 dwr->reset_last_reassoc,
+		 dwr->started_refresh_count,
+		 dwr->started_refresh_fail_count,
+		 dwr->started_refresh_channel_count,
+		 dwr->started_refresh_retry_count,
+		 dwr->started_refresh_filter_count,
+		 time_before(jiffies, dwr->reset_cooldown_until),
+		 !!test_bit(DWR_RESET_F_IN_PROGRESS, &dwr->reset_flags),
+		 !!test_bit(DWR_RESET_F_REQUESTED, &dwr->reset_flags),
+		 !!test_bit(DWR_RESET_F_BLOCKED, &dwr->reset_flags));
+}
+
 static void dwr_mac_bss_info_changed(struct ieee80211_hw *hw,
 				     struct ieee80211_vif *vif,
 				     struct ieee80211_bss_conf *info,
 				     u64 changed)
 {
 	struct dwr_dev *dwr = hw_to_dwr(hw);
+	struct ieee80211_bss_conf shadow;
+	bool assoc_transition = false;
 	int ret;
 
 	dwr_dbg(&dwr->usb.intf->dev,
 		"bss_info_changed: assoc=%d aid=%u changed=0x%llx\n",
 		info->assoc, info->aid, changed);
+	dwr->bss_beacon_int = info->beacon_int;
+	dwr->bss_basic_rates = info->basic_rates;
+	dwr->bss_use_short_preamble = info->use_short_preamble;
+	dwr->bss_use_short_slot = info->use_short_slot;
 
 	if (changed & BSS_CHANGED_BSSID) {
 		if (is_valid_ether_addr(info->bssid)) {
@@ -388,6 +713,10 @@ static void dwr_mac_bss_info_changed(struct ieee80211_hw *hw,
 	}
 
 	if (changed & BSS_CHANGED_ASSOC) {
+		assoc_transition = true;
+		dwr_info(&dwr->usb.intf->dev,
+			 "assoc transition: new_assoc=%d aid=%u bssid=%pM\n",
+			 info->assoc, info->aid, info->bssid);
 		dwr_update_assoc_aid(dwr, info->assoc, info->aid);
 		/*
 		 * TODO(openbsd-rum-port): OpenBSD if_rum.c + if_rumreg.h
@@ -395,31 +724,35 @@ static void dwr_mac_bss_info_changed(struct ieee80211_hw *hw,
 		 * field in this station path; keep software AID state only.
 		 */
 		if (info->assoc)
-			dwr_enter_run_state(dwr, info);
+			ret = dwr_enter_run_state(dwr, info);
 		else
-			dwr_leave_run_state(dwr, "disassoc");
-		/* TODO(openbsd-rum-port): program association-related timing/state registers once confirmed from if_rum.c. */
-	}
-	if (changed & BSS_CHANGED_BEACON_INT) {
-		ret = dwr_set_tsf_sync(dwr, dwr->associated && info->beacon_int,
-				       info->beacon_int);
+			ret = dwr_leave_run_state(dwr, "disassoc");
 		if (ret)
-			dwr_dbg(&dwr->usb.intf->dev, "set beacon interval failed: %d\n", ret);
+			dwr_warn(&dwr->usb.intf->dev,
+				 "assoc transition programming failed assoc=%d err=%d\n",
+				 info->assoc, ret);
+		if (ret && info->assoc) {
+			dwr_update_assoc_aid(dwr, false, 0);
+			(void)dwr_leave_run_state(dwr, "assoc_failed");
+		}
 	}
-	if (changed & BSS_CHANGED_BASIC_RATES) {
-		ret = dwr_set_basic_rates(dwr, info->basic_rates);
+
+	if (!assoc_transition && dwr->associated &&
+	    (changed & (BSS_CHANGED_BSSID |
+			BSS_CHANGED_BEACON_INT |
+			BSS_CHANGED_BASIC_RATES |
+			BSS_CHANGED_ERP_PREAMBLE |
+			BSS_CHANGED_ERP_SLOT))) {
+		dwr_dbg(&dwr->usb.intf->dev,
+			"assoc runtime refresh changed=0x%llx bssid=%pM beacon_int=%u basic=0x%x short_slot=%u short_pre=%u\n",
+			changed, info->bssid, info->beacon_int, info->basic_rates,
+			info->use_short_slot, info->use_short_preamble);
+		dwr_build_bss_conf_shadow(dwr, info, &shadow);
+		ret = dwr_enter_run_state(dwr, &shadow);
 		if (ret)
-			dwr_dbg(&dwr->usb.intf->dev, "set basic rates failed: %d\n", ret);
-	}
-	if (changed & (BSS_CHANGED_ERP_PREAMBLE | BSS_CHANGED_ERP_SLOT)) {
-		ret = dwr_set_erp_timing(dwr, info->use_short_preamble,
-					 info->use_short_slot ?
-					 DWR_RT2573_SLOT_TIME_SHORT :
-					 DWR_RT2573_SLOT_TIME_LONG,
-					 DWR_RT2573_MAC_CSR8_SIFS_DEFAULT,
-					 DWR_RT2573_MAC_CSR8_EIFS_DEFAULT);
-		if (ret)
-			dwr_dbg(&dwr->usb.intf->dev, "set erp timing failed: %d\n", ret);
+			dwr_warn(&dwr->usb.intf->dev,
+				 "runtime run-state refresh failed changed=0x%llx err=%d\n",
+				 changed, ret);
 	}
 }
 
@@ -437,6 +770,10 @@ static int dwr_mac_add_interface(struct ieee80211_hw *hw,
 	dwr->associated = false;
 	dwr->aid = 0;
 	dwr->bssid_valid = false;
+	dwr->bss_beacon_int = 0;
+	dwr->bss_basic_rates = 0;
+	dwr->bss_use_short_preamble = false;
+	dwr->bss_use_short_slot = false;
 	eth_zero_addr(dwr->bssid);
 	return 0;
 }
@@ -448,7 +785,8 @@ static void dwr_mac_remove_interface(struct ieee80211_hw *hw,
 
 	if (dwr->vif_sta == vif)
 		dwr->vif_sta = NULL;
-	dwr_leave_run_state(dwr, "remove_interface");
+	if (dwr_leave_run_state(dwr, "remove_interface"))
+		dwr_dbg(&dwr->usb.intf->dev, "run leave failed on remove_interface\n");
 }
 
 static void dwr_mac_configure_filter(struct ieee80211_hw *hw,
@@ -468,6 +806,8 @@ static void dwr_mac_configure_filter(struct ieee80211_hw *hw,
 		dwr_dbg(&dwr->usb.intf->dev,
 			"set rx filter failed flags=0x%x changed=0x%x\n",
 			*total_flags, changed_flags);
+	else if (!dwr->associated)
+		dwr->started_refresh_filter_count++;
 }
 
 static const struct ieee80211_ops dwr_mac_ops = {
@@ -505,11 +845,14 @@ static int dwr_usb_probe(struct usb_interface *intf,
 	dwr->usb.udev = usb_get_dev(interface_to_usbdev(intf));
 	dwr->usb.intf = intf;
 	mutex_init(&dwr->usb.io_mutex);
+	mutex_init(&dwr->reset_mutex);
 	init_usb_anchor(&dwr->usb.tx_anchor);
 	spin_lock_init(&dwr->tx_lock);
 	INIT_WORK(&dwr->reset_work, dwr_reset_work);
 	INIT_DELAYED_WORK(&dwr->link_tuner_work, dwr_link_tuner_workfn);
+	INIT_DELAYED_WORK(&dwr->tx_watchdog_work, dwr_tx_watchdog_workfn);
 	dwr_rx_init_state(dwr);
+	atomic_set(&dwr->tx_inflight, 0);
 	dwr->link_rssi_dbm = DWR_LINK_RSSI_INVALID_DBM;
 	dwr->bbp17_base = 0x20;
 
@@ -523,8 +866,7 @@ static int dwr_usb_probe(struct usb_interface *intf,
 	hw->max_report_rates = 1;
 	hw->extra_tx_headroom = 0;
 	hw->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
-	hw->flags = IEEE80211_HW_SIGNAL_DBM |
-		    IEEE80211_HW_SUPPORTS_PS;
+	hw->flags = IEEE80211_HW_SIGNAL_DBM;
 
 	ret = dwr_eeprom_parse(dwr);
 	if (!ret && dwr->eeprom.valid) {
@@ -539,12 +881,8 @@ static int dwr_usb_probe(struct usb_interface *intf,
 
 	if (!dwr_rf_rev_supported_narrow(dwr->eeprom.rf_rev)) {
 		dwr_warn(&intf->dev,
-			 "unsupported rf_rev=%u for current bring-up; refusing attach for %04x:%04x\n",
+			 "unsupported rf_rev=%u for DWA-111 narrow target (RT2528 only); refusing attach for %04x:%04x\n",
 			 dwr->eeprom.rf_rev, id->idVendor, id->idProduct);
-		/*
-		 * TODO(openbsd-rum-port): add source-backed 5GHz channel profile
-		 * and full per-RF runtime tuning before broad band advertisement.
-		 */
 		ret = -EOPNOTSUPP;
 		goto err_free_hw;
 	}
@@ -579,14 +917,21 @@ static void dwr_usb_disconnect(struct usb_interface *intf)
 		return;
 
 	usb_set_intfdata(intf, NULL);
+	set_bit(DWR_RESET_F_BLOCKED, &dwr->reset_flags);
 	dwr->usb.running = false;
-	dwr_leave_run_state(dwr, "disconnect");
+	if (dwr_leave_run_state(dwr, "disconnect"))
+		dwr_dbg(&dwr->usb.intf->dev, "run leave failed on disconnect\n");
+	cancel_delayed_work_sync(&dwr->tx_watchdog_work);
 	dwr_rx_stop(dwr);
 	dwr_rx_log_summary(dwr, "disconnect");
 	dwr_log_channel_apply_summary(dwr, "disconnect");
 	dwr_log_sta_rx_counters(dwr, "disconnect");
+	dwr->tx_cancel_reason = DWR_TX_CANCEL_TEARDOWN;
 	dwr_tx_cancel_pending(dwr);
 	cancel_work_sync(&dwr->reset_work);
+	clear_bit(DWR_RESET_F_REQUESTED, &dwr->reset_flags);
+	clear_bit(DWR_RESET_F_IN_PROGRESS, &dwr->reset_flags);
+	dwr_log_reset_summary(dwr, "disconnect");
 	if (dwr->registered_hw)
 		ieee80211_unregister_hw(dwr->hw);
 	usb_put_dev(dwr->usb.udev);
@@ -594,48 +939,8 @@ static void dwr_usb_disconnect(struct usb_interface *intf)
 }
 
 static const struct usb_device_id dwr_usb_ids[] = {
-	/*
-	 * OpenBSD if_rum.c rum_devs[] surface plus RT73 family aliases from
-	 * Linux rt73usb device table; attach is still truthfully gated at probe.
-	 */
-	{ USB_DEVICE(0x07b8, 0xb21b) }, { USB_DEVICE(0x07b8, 0xb21c) },
-	{ USB_DEVICE(0x07b8, 0xb21d) }, { USB_DEVICE(0x07b8, 0xb21e) },
-	{ USB_DEVICE(0x07b8, 0xb21f) }, { USB_DEVICE(0x14b2, 0x3c10) },
-	{ USB_DEVICE(0x148f, 0x9021) }, { USB_DEVICE(0x0eb0, 0x9021) },
-	{ USB_DEVICE(0x18c5, 0x0002) }, { USB_DEVICE(0x1690, 0x0722) },
-	{ USB_DEVICE(0x0b05, 0x1723) }, { USB_DEVICE(0x0b05, 0x1724) },
-	{ USB_DEVICE(0x050d, 0x7050) }, { USB_DEVICE(0x050d, 0x705a) },
-	{ USB_DEVICE(0x050d, 0x905b) }, { USB_DEVICE(0x050d, 0x905c) },
-	{ USB_DEVICE(0x1631, 0xc019) }, { USB_DEVICE(0x08dd, 0x0120) },
-	{ USB_DEVICE(0x0411, 0x00d8) }, { USB_DEVICE(0x0411, 0x00d9) },
-	{ USB_DEVICE(0x0411, 0x00e6) }, { USB_DEVICE(0x0411, 0x00f4) },
-	{ USB_DEVICE(0x0411, 0x0116) }, { USB_DEVICE(0x0411, 0x0119) },
-	{ USB_DEVICE(0x0411, 0x0137) }, { USB_DEVICE(0x178d, 0x02be) },
-	{ USB_DEVICE(0x1371, 0x9022) }, { USB_DEVICE(0x1371, 0x9032) },
-	{ USB_DEVICE(0x14b2, 0x3c22) }, { USB_DEVICE(0x07aa, 0x002e) },
-	{ USB_DEVICE(0x07d1, 0x3c03) }, { USB_DEVICE(0x07d1, 0x3c04) },
-	{ USB_DEVICE(0x07d1, 0x3c06) }, { USB_DEVICE(0x07d1, 0x3c07) },
-	{ USB_DEVICE(0x7392, 0x7318) }, { USB_DEVICE(0x7392, 0x7618) },
-	{ USB_DEVICE(0x1740, 0x3701) }, { USB_DEVICE(0x15a9, 0x0004) },
-	{ USB_DEVICE(0x1044, 0x8008) }, { USB_DEVICE(0x1044, 0x800a) },
-	{ USB_DEVICE(0x1472, 0x0009) }, { USB_DEVICE(0x06f8, 0xe002) },
-	{ USB_DEVICE(0x06f8, 0xe010) }, { USB_DEVICE(0x06f8, 0xe020) },
-	{ USB_DEVICE(0x13b1, 0x0020) }, { USB_DEVICE(0x13b1, 0x0023) },
-	{ USB_DEVICE(0x13b1, 0x0028) }, { USB_DEVICE(0x0db0, 0x4600) },
-	{ USB_DEVICE(0x0db0, 0x6877) }, { USB_DEVICE(0x0db0, 0x6874) },
-	{ USB_DEVICE(0x0db0, 0xa861) }, { USB_DEVICE(0x0db0, 0xa874) },
-	{ USB_DEVICE(0x1b75, 0x7318) }, { USB_DEVICE(0x04bb, 0x093d) },
-	{ USB_DEVICE(0x148f, 0x2573) }, { USB_DEVICE(0x148f, 0x2671) },
-	{ USB_DEVICE(0x0812, 0x3101) }, { USB_DEVICE(0x18e8, 0x6196) },
-	{ USB_DEVICE(0x18e8, 0x6229) }, { USB_DEVICE(0x18e8, 0x6238) },
-	{ USB_DEVICE(0x04e8, 0x4471) }, { USB_DEVICE(0x1740, 0x7100) },
-	{ USB_DEVICE(0x0df6, 0x0024) }, { USB_DEVICE(0x0df6, 0x0027) },
-	{ USB_DEVICE(0x0df6, 0x002f) }, { USB_DEVICE(0x0df6, 0x90ac) },
-	{ USB_DEVICE(0x0df6, 0x9712) }, { USB_DEVICE(0x0769, 0x31f3) },
-	{ USB_DEVICE(0x6933, 0x5001) }, { USB_DEVICE(0x0471, 0x200a) },
-	{ USB_DEVICE(0x2019, 0xab01) }, { USB_DEVICE(0x2019, 0xab50) },
-	{ USB_DEVICE(0x7167, 0x3840) }, { USB_DEVICE(0x0cde, 0x001c) },
-	{ USB_DEVICE(0x0586, 0x3415) },
+	/* Narrow target-first policy: D-Link DWA-111 (RT2571W + RT2528). */
+	{ USB_DEVICE(0x07d1, 0x3c06) },
 	{ }
 };
 MODULE_DEVICE_TABLE(usb, dwr_usb_ids);

@@ -5,6 +5,7 @@
 #include <linux/usb.h>
 #include <linux/mutex.h>
 #include <linux/bitfield.h>
+#include <linux/bitops.h>
 #include <net/mac80211.h>
 #include "rum4linux_rx.h"
 
@@ -267,6 +268,8 @@ struct dwr_dev {
 	spinlock_t tx_lock;
 	struct work_struct reset_work;
 	struct delayed_work link_tuner_work;
+	struct delayed_work tx_watchdog_work;
+	struct mutex reset_mutex;
 	struct dwr_rx_state rx;
 	u8 mac_addr[ETH_ALEN];
 	u8 bssid[ETH_ALEN];
@@ -279,10 +282,84 @@ struct dwr_dev {
 	struct ieee80211_vif *vif_sta;
 	unsigned int filter_flags;
 	bool registered_hw;
+	int reset_last_err;
+	const char *reset_last_reason;
+	unsigned long reset_flags;
+	u32 reset_req_total;
+	u32 reset_req_tx_submit;
+	u32 reset_req_tx_complete;
+	u32 reset_req_rx_complete;
+	u32 reset_success_count;
+	u32 reset_failure_count;
+	u8 reset_last_stage;
+	u8 reset_last_fail_stage;
+	bool reset_last_reassoc;
+	u16 bss_beacon_int;
+	u32 bss_basic_rates;
+	bool bss_use_short_preamble;
+	bool bss_use_short_slot;
+	atomic_t tx_inflight;
+	unsigned long tx_flags;
+	u32 tx_inflight_high_wm;
+	u32 tx_queue_stop_count;
+	u32 tx_queue_wake_count;
+	u32 tx_reject_busy_count;
+	u32 tx_protection_bypass_count;
+	u32 tx_protection_bypass_eapol_count;
+	u32 tx_protection_reject_count;
+	u32 tx_protection_reject_non_data_count;
+	u32 tx_protection_reject_protected_data_count;
+	u32 tx_protection_reject_non_eapol_data_count;
+	u32 tx_local_desc_fail_count;
+	u32 tx_local_alloc_fail_count;
+	u32 tx_submit_fail_count;
+	u32 tx_complete_fail_count;
+	u32 tx_reset_cancel_count;
+	u32 tx_teardown_cancel_count;
+	u8 reset_last_replay_mode;
+	u8 tx_cancel_reason;
+	u32 started_refresh_count;
+	u32 started_refresh_fail_count;
+	u32 started_refresh_channel_count;
+	u32 started_refresh_retry_count;
+	u32 started_refresh_filter_count;
+	unsigned long tx_last_progress_jiffies;
+	u32 tx_watchdog_arm_count;
+	u32 tx_watchdog_fire_count;
+	u32 tx_watchdog_clear_count;
+	u32 reset_suppressed_count;
+	unsigned long reset_window_jiffies;
+	u32 reset_window_count;
+	unsigned long reset_cooldown_until;
 
 	struct dwr_eeprom_info eeprom;
 	struct dwr_hw_state hw_state;
 };
+
+#define DWR_RESET_F_REQUESTED BIT(0)
+#define DWR_RESET_F_IN_PROGRESS BIT(1)
+#define DWR_RESET_F_BLOCKED BIT(2)
+
+#define DWR_RESET_STAGE_IDLE              0
+#define DWR_RESET_STAGE_LEAVE_RUN         1
+#define DWR_RESET_STAGE_HW_STOP           2
+#define DWR_RESET_STAGE_HW_INIT           3
+#define DWR_RESET_STAGE_MACADDR           4
+#define DWR_RESET_STAGE_FILTER            5
+#define DWR_RESET_STAGE_ERP_DEFAULTS      6
+#define DWR_RESET_STAGE_RX_START          7
+#define DWR_RESET_STAGE_RESTORE_STARTED   8
+#define DWR_RESET_STAGE_REASSOC_REENTER   9
+
+#define DWR_RESET_REPLAY_NONE           0
+#define DWR_RESET_REPLAY_UNASSOC        1
+#define DWR_RESET_REPLAY_ASSOC_REENTER  2
+
+#define DWR_TX_F_QUEUES_STOPPED BIT(0)
+
+#define DWR_TX_CANCEL_NONE     0
+#define DWR_TX_CANCEL_RESET    1
+#define DWR_TX_CANCEL_TEARDOWN 2
 
 static inline struct dwr_dev *hw_to_dwr(struct ieee80211_hw *hw)
 {
@@ -319,5 +396,7 @@ int dwr_read_rx_error_counters(struct dwr_dev *dwr, u16 *fcs_err,
 			       u16 *plcp_err, u16 *physical_err,
 			       u16 *false_cca);
 void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason);
+void dwr_request_reset(struct dwr_dev *dwr, const char *reason, int err);
+void dwr_tx_progress(struct dwr_dev *dwr, bool inflight_nonzero);
 
 #endif
