@@ -1012,11 +1012,10 @@ int dwr_set_rx_filter(struct dwr_dev *dwr, unsigned int filter_flags)
 int dwr_set_basic_rates(struct dwr_dev *dwr, u32 basic_rates)
 {
 	/*
-	 * Current narrow TX path is CCK-only (idx 0..3) until OFDM TX
-	 * descriptor/status semantics are source-confirmed.
+	 * OpenBSD/rt73 shape: basic-rate bitmap is passed through from ERP state.
+	 * Current supported table is 2.4GHz 11b/11g only, so mask to low 12 bits.
 	 */
-	/* TODO(openbsd-rum-port): verify full rate-mask mapping across bands and OFDM TX support. */
-	return dwr_write_reg(dwr, DWR_TXRX_CSR5, basic_rates & 0x000f);
+	return dwr_write_reg(dwr, DWR_TXRX_CSR5, basic_rates & 0x0fff);
 }
 
 int dwr_set_tsf_sync(struct dwr_dev *dwr, bool enable, u16 beacon_int)

@@ -27,13 +27,14 @@ struct dwr_tx_urb_ctx {
 #define DWR_TX_VALID BIT(1)
 #define DWR_TX_IFS_SIFS BIT(6)
 #define DWR_TX_NEED_ACK BIT(3)
+#define DWR_TX_OFDM BIT(5)
 #define DWR_TX_MAX_FRAME_LEN 4095
 #define DWR_PLCP_LENGEXT BIT(7)
 #define DWR_PLCP_SHORT_PREAMBLE BIT(3)
 
-static u8 dwr_plcp_signal_cck(u8 rate_500k)
+static u8 dwr_plcp_signal(u8 rate_500k)
 {
-	/* OpenBSD rum_plcp_signal() mapping for CCK rates. */
+	/* OpenBSD rum_plcp_signal() mapping for CCK+OFDM rates. */
 	switch (rate_500k) {
 	case 2:
 		return 0x0;
@@ -43,14 +44,30 @@ static u8 dwr_plcp_signal_cck(u8 rate_500k)
 		return 0x2;
 	case 22:
 		return 0x3;
+	case 12:
+		return 0xb;
+	case 18:
+		return 0xf;
+	case 24:
+		return 0xa;
+	case 36:
+		return 0xe;
+	case 48:
+		return 0x9;
+	case 72:
+		return 0xd;
+	case 96:
+		return 0x8;
+	case 108:
+		return 0xc;
 	default:
 		return 0xff;
 	}
 }
 
-static int dwr_tx_signal_rate_500k_from_idx(int idx, u8 *signal, u8 *rate_500k)
+static int dwr_tx_signal_rate_500k_from_idx(int idx, u8 *signal,
+					    u8 *rate_500k, bool *ofdm)
 {
-	/* Narrow truthful TX support: only 2.4GHz CCK indices 0..3. */
 	switch (idx) {
 	case 0:
 		*rate_500k = 2;
@@ -64,11 +81,36 @@ static int dwr_tx_signal_rate_500k_from_idx(int idx, u8 *signal, u8 *rate_500k)
 	case 3:
 		*rate_500k = 22;
 		break;
+	case 4:
+		*rate_500k = 12;
+		break;
+	case 5:
+		*rate_500k = 18;
+		break;
+	case 6:
+		*rate_500k = 24;
+		break;
+	case 7:
+		*rate_500k = 36;
+		break;
+	case 8:
+		*rate_500k = 48;
+		break;
+	case 9:
+		*rate_500k = 72;
+		break;
+	case 10:
+		*rate_500k = 96;
+		break;
+	case 11:
+		*rate_500k = 108;
+		break;
 	default:
 		return -EOPNOTSUPP;
 	}
 
-	*signal = dwr_plcp_signal_cck(*rate_500k);
+	*ofdm = *rate_500k >= 12;
+	*signal = dwr_plcp_signal(*rate_500k);
 	if (*signal == 0xff)
 		return -EINVAL;
 
@@ -85,6 +127,7 @@ static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
 	u16 wme;
 	u32 flags;
 	u32 remainder;
+	bool ofdm = false;
 	bool short_preamble;
 	const struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	int ret;
@@ -95,11 +138,13 @@ static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
 	memset(desc, 0, sizeof(*desc));
 
 	ret = dwr_tx_signal_rate_500k_from_idx(info->control.rates[0].idx,
-					       &signal, &rate_500k);
+					       &signal, &rate_500k, &ofdm);
 	if (ret)
 		return ret;
 
 	flags = DWR_TX_VALID | DWR_TX_IFS_SIFS | (skb->len << 16);
+	if (ofdm)
+		flags |= DWR_TX_OFDM;
 	if (!(info->flags & IEEE80211_TX_CTL_NO_ACK))
 		flags |= DWR_TX_NEED_ACK;
 	desc->flags = cpu_to_le32(flags);
@@ -112,21 +157,31 @@ static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
 	desc->plcp_service = 4;
 	short_preamble = !!(dwr->hw->conf.flags & IEEE80211_CONF_SHORT_PREAMBLE);
 
-	/* OpenBSD CCK plcp length formula; len includes CRC. */
 	payload_len_crc = skb->len + IEEE80211_FCS_LEN;
-	plcp_length = (16 * payload_len_crc + rate_500k - 1) / rate_500k;
-	if (rate_500k == 22) {
-		/* OpenBSD rum_setup_tx_desc(): PLCP length extension for 11 Mbps CCK. */
-		remainder = (16 * payload_len_crc) % 22;
-		if (remainder && remainder < 7)
-			desc->plcp_service |= DWR_PLCP_LENGEXT;
+	if (ofdm) {
+		/*
+		 * OpenBSD rum_setup_tx_desc(): OFDM PLCP length is payload+FCS
+		 * in a 12-bit field split as hi[11:6]/lo[5:0].
+		 */
+		plcp_length = payload_len_crc & 0x0fff;
+		desc->plcp_length_hi = plcp_length >> 6;
+		desc->plcp_length_lo = plcp_length & 0x3f;
+	} else {
+		/* OpenBSD CCK plcp length formula; len includes CRC. */
+		plcp_length = (16 * payload_len_crc + rate_500k - 1) / rate_500k;
+		if (rate_500k == 22) {
+			/* OpenBSD rum_setup_tx_desc(): PLCP length extension for 11 Mbps CCK. */
+			remainder = (16 * payload_len_crc) % 22;
+			if (remainder && remainder < 7)
+				desc->plcp_service |= DWR_PLCP_LENGEXT;
+		}
+		desc->plcp_length_lo = plcp_length & 0xff;
+		desc->plcp_length_hi = plcp_length >> 8;
+		if (rate_500k != 2 && short_preamble)
+			desc->plcp_signal |= DWR_PLCP_SHORT_PREAMBLE;
 	}
-	if (rate_500k != 2 && short_preamble)
-		desc->plcp_signal |= DWR_PLCP_SHORT_PREAMBLE;
-	desc->plcp_length_lo = plcp_length & 0xff;
-	desc->plcp_length_hi = plcp_length >> 8;
 
-	/* TODO(openbsd-rum-port): map per-rate/per-queue TX descriptor fields from if_rum.c/rt73usb before broad rate support. */
+	/* TODO(openbsd-rum-port): map ack-rate/duration/protection and multi-rate retry descriptor fields from if_rum.c. */
 	return 0;
 }
 
