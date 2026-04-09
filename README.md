@@ -20,7 +20,7 @@ Implemented scaffold pieces:
 - bounded RX bulk-IN URB pipeline with strict descriptor/frame sanity checks and conservative mac80211 delivery
 - minimal station-mode interface/BSSID runtime programming hooks, including BSSID clear on disassociation/teardown
 - source-backed station runtime register programming for MAC address, RX filter, basic rates, TSF sync, and ERP timing knobs
-- truthful current TX rate surface: only 2.4GHz CCK (1/2/5.5/11 Mbps) is advertised/operational for the narrow descriptor path; OFDM TX remains deferred
+- truthful current TX rate surface now includes 2.4GHz 11b/11g rates (CCK + OFDM) with source-backed OFDM PLCP descriptor signaling; per-frame ACK/retry truth is still transport-completion-limited
 - initial and runtime 2.4GHz channel applies now share one bounded sequence (BBP profile -> RF set -> post-channel sanity -> one bounded recovery attempt)
 - channel-apply observability counters/stage tracking now record init vs runtime applies, first-pass failures, bounded recovery outcomes, and last stage/channel/error
 - channel-apply diagnostics now include conservative error-class buckets (invalid/unsupported/timeout/io/sanity/unknown) derived from stage+errno for faster field triage
@@ -29,6 +29,7 @@ Implemented scaffold pieces:
 - channel-apply failure diagnostics now also retain a bounded delta snapshot (latest failure vs previous retained failure) covering runtime/init, channel/stage/class/origin/errno, and compact sanity-read value state (missing/same/changed)
 - probe-time EEPROM MAC adoption for mac80211/hardware identity coherence (random fallback only on EEPROM failure)
 - RUN-state sequencing now mirrors OpenBSD rum(4) ordering for channel/slot/MRR/preamble/basic-rates/BSSID/TSF sync and aborts TSF sync on RUN exit
+- RUN entry now gates TSF-sync enablement on both a valid BSSID and non-zero beacon interval; otherwise it conservatively clears/keeps TSF sync aborted instead of programming a zero-interval sync state
 - conservative TX retry-limit/fallback plumbing now programs confirmed TXRX_CSR4 fields; TX status still avoids claiming ACK success without hardware feedback
 - no confirmed host-visible RT2573 per-frame TX ACK/retry result ingestion path is wired yet; tx status remains transport-completion-limited
 - RX CCK rate decoding now follows source-backed raw 100kbps descriptor values (10/20/55/110) instead of low-bit masking
@@ -40,7 +41,7 @@ Implemented scaffold pieces:
 - RX framing now follows source-backed RT2573/rt73 shape more closely: descriptor byte-count is used directly as frame length (no unconditional FCS subtraction), and frame start is fixed at descriptor end (24-byte descriptor); non-zero descriptor frame-offset is currently ignored in the narrow path (TODO-scoped for broader variants)
 - RX signal decode now avoids dropping frames solely on unknown descriptor signal values: it falls back to 1 Mbps index (OpenBSD `rum_rxrate()` fallback shape) and keeps delivery conservative
 - RX RSSI metadata now follows rt73/RT2573 AGC+LNA decode shape (instead of raw byte use), improving signal/link-tuner inputs in the active narrow station path
-- RX rate metadata is now kept coherent with the CCK-only supported-rate table: OFDM RX frames are delivered with conservative 1 Mbps fallback metadata instead of out-of-range OFDM rate indexes
+- RX rate metadata now includes source-backed OFDM PLCP reverse mapping (rum_rxrate shape) for 2.4GHz 11g rates
 - CCK TX descriptor PLCP fields now mirror OpenBSD `rum_setup_tx_desc()` edge behavior for this narrow path: 11 Mbps `PLCP_LENGEXT` handling and short-preamble signal-bit application when configured
 - TX bulk-OUT transfer length is now 4-byte padded (descriptor+frame rounded up), matching OpenBSD `rum_tx_data()` transfer-shape handling for RT2573
 - RX descriptor parsing now drops BUSY-marked descriptors and payloads shorter than `ieee80211_frame_min`, mirroring conservative OpenBSD receive gating before frame delivery
@@ -54,7 +55,7 @@ Implemented scaffold pieces:
 Still intentionally incomplete:
 
 - full, validated TX descriptor/status semantics across `rum(4)`-family variants
-- OFDM TX descriptor/status support is still deferred; OFDM rates may be RX-decoded but are not advertised as TX-operational in this narrow station path
+- OFDM TX descriptor basics (signal/length/OFDM-flag) are now wired for the 2.4GHz 11g rate table; ACK-rate/duration/protection and richer retry programming remain deferred
 - full RX descriptor confidence across all rum(4)-family variants
 - full confirmation of all RT2573 RXD_W0_DROP causes remains TODO(openbsd-rum-port); current mapping is narrowed to “non-CRC descriptor-drop” and only uses PLCP-failure policy/flag as a conservative proxy
 - association / operational station behavior
@@ -72,6 +73,7 @@ All uncertain behavior remains tagged as `TODO(openbsd-rum-port)`.
 ## Safety defaults
 
 - Default safety gate is `bind=0` (no attach by default).
+- USB ID match table now covers the broader RT73/rum(4)-family surface, and probe now accepts source-backed 2.4GHz bring-up RF revisions (`RT2528`/`RT2527`/`RT5225`/`RT5226`); 5GHz bring-up/advertisement is still deferred.
 - Functional hardware verification is intentionally deferred at this stage.
 
 ## Layout

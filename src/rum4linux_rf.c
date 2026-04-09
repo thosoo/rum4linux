@@ -17,8 +17,9 @@ struct dwr_rf_chan_plan {
 
 /*
  * Confidence source:
- * - Linux rt73usb rf_vals_bg_2528[] channel table (RT2528, 2.4GHz only).
- * - OpenBSD rum(4) style 3-phase RF write sequencing (RF3 bit2 toggle).
+ * - OpenBSD if_rumreg.h RT2573_RF5226 / RT2573_RF5225 tables.
+ * - Linux rt73usb rf_vals_bg_2528[] for RT2528 2.4GHz parity.
+ * - OpenBSD rum_set_chan() 3-phase RF write sequencing and smart-mode policy.
  */
 static const struct dwr_rf_chan_plan dwr_rf2528_2ghz[] = {
 	{ 1, 0x02c0c, 0x00786, 0x68255, 0xfea0b },
@@ -35,6 +36,40 @@ static const struct dwr_rf_chan_plan dwr_rf2528_2ghz[] = {
 	{ 12, 0x02c0c, 0x0079a, 0x68255, 0xfea1f },
 	{ 13, 0x02c0c, 0x0079e, 0x68255, 0xfea0b },
 	{ 14, 0x02c0c, 0x007a2, 0x68255, 0xfea13 },
+};
+
+static const struct dwr_rf_chan_plan dwr_rf5226_2ghz[] = {
+	{ 1, 0x00b03, 0x001e1, 0x1a014, 0x30282 },
+	{ 2, 0x00b03, 0x001e1, 0x1a014, 0x30287 },
+	{ 3, 0x00b03, 0x001e2, 0x1a014, 0x30282 },
+	{ 4, 0x00b03, 0x001e2, 0x1a014, 0x30287 },
+	{ 5, 0x00b03, 0x001e3, 0x1a014, 0x30282 },
+	{ 6, 0x00b03, 0x001e3, 0x1a014, 0x30287 },
+	{ 7, 0x00b03, 0x001e4, 0x1a014, 0x30282 },
+	{ 8, 0x00b03, 0x001e4, 0x1a014, 0x30287 },
+	{ 9, 0x00b03, 0x001e5, 0x1a014, 0x30282 },
+	{ 10, 0x00b03, 0x001e5, 0x1a014, 0x30287 },
+	{ 11, 0x00b03, 0x001e6, 0x1a014, 0x30282 },
+	{ 12, 0x00b03, 0x001e6, 0x1a014, 0x30287 },
+	{ 13, 0x00b03, 0x001e7, 0x1a014, 0x30282 },
+	{ 14, 0x00b03, 0x001e8, 0x1a014, 0x30284 },
+};
+
+static const struct dwr_rf_chan_plan dwr_rf5225_2527_2ghz[] = {
+	{ 1, 0x00b33, 0x011e1, 0x1a014, 0x30282 },
+	{ 2, 0x00b33, 0x011e1, 0x1a014, 0x30287 },
+	{ 3, 0x00b33, 0x011e2, 0x1a014, 0x30282 },
+	{ 4, 0x00b33, 0x011e2, 0x1a014, 0x30287 },
+	{ 5, 0x00b33, 0x011e3, 0x1a014, 0x30282 },
+	{ 6, 0x00b33, 0x011e3, 0x1a014, 0x30287 },
+	{ 7, 0x00b33, 0x011e4, 0x1a014, 0x30282 },
+	{ 8, 0x00b33, 0x011e4, 0x1a014, 0x30287 },
+	{ 9, 0x00b33, 0x011e5, 0x1a014, 0x30282 },
+	{ 10, 0x00b33, 0x011e5, 0x1a014, 0x30287 },
+	{ 11, 0x00b33, 0x011e6, 0x1a014, 0x30282 },
+	{ 12, 0x00b33, 0x011e6, 0x1a014, 0x30287 },
+	{ 13, 0x00b33, 0x011e7, 0x1a014, 0x30282 },
+	{ 14, 0x00b33, 0x011e8, 0x1a014, 0x30284 },
 };
 
 struct dwr_chan_txpower {
@@ -74,7 +109,7 @@ static struct dwr_chan_txpower dwr_rf_txpower_for_chan(struct dwr_dev *dwr, u8 c
 	return txp;
 }
 
-static int dwr_rf_set_chan_bbp(struct dwr_dev *dwr, u8 bbp94)
+static int dwr_rf_set_chan_bbp(struct dwr_dev *dwr, u8 bbp94, bool smart_mode)
 {
 	u8 bbp3;
 	int ret;
@@ -82,11 +117,16 @@ static int dwr_rf_set_chan_bbp(struct dwr_dev *dwr, u8 bbp94)
 	ret = dwr_bbp_read(dwr, 3, &bbp3);
 	if (ret)
 		return ret;
-	bbp3 &= ~DWR_BBP3_SMART_MODE;
+	if (smart_mode)
+		bbp3 |= DWR_BBP3_SMART_MODE;
+	else
+		bbp3 &= ~DWR_BBP3_SMART_MODE;
 	ret = dwr_bbp_write(dwr, 3, bbp3);
 	if (ret)
 		return ret;
-	return dwr_bbp_write(dwr, 94, bbp94);
+	if (bbp94 != DWR_BBP94_DEFAULT)
+		return dwr_bbp_write(dwr, 94, bbp94);
+	return 0;
 }
 
 static int dwr_rf_write(struct dwr_dev *dwr, u8 reg, u32 val)
@@ -118,6 +158,8 @@ static int dwr_rf_write(struct dwr_dev *dwr, u8 reg, u32 val)
 int dwr_rf_set_channel_2ghz(struct dwr_dev *dwr, u8 chan)
 {
 	const struct dwr_rf_chan_plan *plan = NULL;
+	const struct dwr_rf_chan_plan *table = NULL;
+	size_t table_n = 0;
 	u32 verify;
 	u8 bbp3;
 	struct dwr_chan_txpower txp;
@@ -125,22 +167,38 @@ int dwr_rf_set_channel_2ghz(struct dwr_dev *dwr, u8 chan)
 	int i;
 	u32 rf3;
 	u32 rf4;
-
-	if (dwr->eeprom.rf_rev != DWR_RF_2528) {
-		dwr_err(&dwr->usb.intf->dev,
-			"rf init: unsupported rf_rev=%u for RT2528 path\n",
-			dwr->eeprom.rf_rev);
-		return -EOPNOTSUPP;
-	}
+	bool smart_mode = false;
 
 	if (chan < 1 || chan > 14) {
 		dwr_err(&dwr->usb.intf->dev, "rf init: invalid 2.4GHz channel %u\n", chan);
 		return -EINVAL;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(dwr_rf2528_2ghz); i++) {
-		if (dwr_rf2528_2ghz[i].chan == chan) {
-			plan = &dwr_rf2528_2ghz[i];
+	switch (dwr->eeprom.rf_rev) {
+	case DWR_RF_2528:
+		table = dwr_rf2528_2ghz;
+		table_n = ARRAY_SIZE(dwr_rf2528_2ghz);
+		break;
+	case DWR_RF_5226:
+		table = dwr_rf5226_2ghz;
+		table_n = ARRAY_SIZE(dwr_rf5226_2ghz);
+		break;
+	case DWR_RF_2527:
+	case DWR_RF_5225:
+		table = dwr_rf5225_2527_2ghz;
+		table_n = ARRAY_SIZE(dwr_rf5225_2527_2ghz);
+		smart_mode = true;
+		break;
+	default:
+		dwr_err(&dwr->usb.intf->dev,
+			"rf init: unsupported rf_rev=%u for 2.4GHz path\n",
+			dwr->eeprom.rf_rev);
+		return -EOPNOTSUPP;
+	}
+
+	for (i = 0; i < table_n; i++) {
+		if (table[i].chan == chan) {
+			plan = &table[i];
 			break;
 		}
 	}
@@ -194,7 +252,7 @@ int dwr_rf_set_channel_2ghz(struct dwr_dev *dwr, u8 chan)
 
 	udelay(10);
 
-	ret = dwr_rf_set_chan_bbp(dwr, txp.bbp94);
+	ret = dwr_rf_set_chan_bbp(dwr, txp.bbp94, smart_mode);
 	if (ret)
 		return ret;
 
