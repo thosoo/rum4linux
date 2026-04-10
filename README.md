@@ -37,7 +37,8 @@ Everything else is intentionally out of scope until separately source-backed and
 - no confirmed host-visible RT2573 per-frame ACK/retry status ingestion path is wired
 - tx status remains conservative and does not claim hardware ACK truth
 - no confirmed dedicated RT2573 hardware AID register/field from OpenBSD sources; AID remains software-tracked
-- RTS/CTS and CTS-to-self offload requests follow a bounded policy: non-data frames are rejected; data frames may use conservative bypass (counted + logged), because OpenBSD-equivalent separate protection-frame emission is not implemented yet
+- mac80211 RTS/CTS and CTS-to-self requests on supported station data TX now emit a dedicated protection frame (OpenBSD `rum_tx_data()` shape: protection frame first, then data frame)
+- protection requests on non-data frames, contradictory RTS+CTS requests, or protection-frame synthesis/submit failures are rejected conservatively (counted) rather than silently bypassed
 - only USB ID `07d1:3c06` is matched in this target-first branch
 - no 5 GHz support
 
