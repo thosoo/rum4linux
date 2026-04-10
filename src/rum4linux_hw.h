@@ -43,6 +43,10 @@
 #define DWR_TXRX_CSR10         0x3068
 #define DWR_STA_CSR0           0x30c0
 #define DWR_STA_CSR1           0x30c4
+#define DWR_STA_CSR2           0x30c8
+#define DWR_STA_CSR3           0x30cc
+#define DWR_STA_CSR4           0x30d0
+#define DWR_STA_CSR5           0x30d4
 #define DWR_PHY_CSR0           0x3080
 #define DWR_PHY_CSR3           0x308c
 #define DWR_PHY_CSR4           0x3090
@@ -101,6 +105,10 @@
 #define DWR_STA_CSR0_PLCP_ERROR_MASK GENMASK(31, 16)
 #define DWR_STA_CSR1_PHYSICAL_ERROR_MASK GENMASK(15, 0)
 #define DWR_STA_CSR1_FALSE_CCA_MASK GENMASK(31, 16)
+#define DWR_STA_CSR4_TX_NO_RETRY_OK_MASK GENMASK(15, 0)
+#define DWR_STA_CSR4_TX_ONE_RETRY_OK_MASK GENMASK(31, 16)
+#define DWR_STA_CSR5_TX_MULTI_RETRY_OK_MASK GENMASK(15, 0)
+#define DWR_STA_CSR5_TX_RETRY_FAIL_MASK GENMASK(31, 16)
 #define DWR_PHY_CSR0_PA_PE_2GHZ BIT(16)
 #define DWR_PHY_CSR0_PA_PE_5GHZ BIT(17)
 
@@ -327,6 +335,12 @@ struct dwr_dev {
 	u32 tx_watchdog_arm_count;
 	u32 tx_watchdog_fire_count;
 	u32 tx_watchdog_clear_count;
+	u32 tx_retry_stats_read_ok_count;
+	u32 tx_retry_stats_read_fail_count;
+	u16 tx_retry_no_retry_ok;
+	u16 tx_retry_one_retry_ok;
+	u16 tx_retry_multi_retry_ok;
+	u16 tx_retry_fail;
 	u32 reset_suppressed_count;
 	unsigned long reset_window_jiffies;
 	u32 reset_window_count;
@@ -393,8 +407,11 @@ int dwr_set_erp_timing(struct dwr_dev *dwr, bool short_preamble,
 		      u8 slot_time, u8 sifs, u16 eifs);
 int dwr_set_rx_timing_defaults(struct dwr_dev *dwr);
 int dwr_read_rx_error_counters(struct dwr_dev *dwr, u16 *fcs_err,
-			       u16 *plcp_err, u16 *physical_err,
-			       u16 *false_cca);
+			      u16 *plcp_err, u16 *physical_err,
+			      u16 *false_cca);
+int dwr_read_tx_retry_counters(struct dwr_dev *dwr, u16 *no_retry_ok,
+			       u16 *one_retry_ok, u16 *multi_retry_ok,
+			       u16 *retry_fail);
 void dwr_log_channel_apply_summary(struct dwr_dev *dwr, const char *reason);
 void dwr_request_reset(struct dwr_dev *dwr, const char *reason, int err);
 void dwr_tx_progress(struct dwr_dev *dwr, bool inflight_nonzero);

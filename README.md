@@ -32,11 +32,13 @@ Everything else is intentionally out of scope until separately source-backed and
 - bounded reset/recovery workqueue path for realistic TX/RX USB fault classes
 - reset storm control with cooldown suppresses repeated immediate resets
 - reset observability counters/log summary for request reasons and last recovery stage/failure point
+- narrow TX retry observability via RT2573 `STA_CSR4/STA_CSR5` aggregate counters (no per-frame ACK truth)
 
 ## Truthful limitations that remain
 
 - no confirmed host-visible RT2573 per-frame ACK/retry status ingestion path is wired
 - tx status remains conservative and does not claim hardware ACK truth
+- RT2573 `STA_CSR4/STA_CSR5` counters are aggregate snapshots only; they are useful for validation/tuning but cannot be mapped back to individual frames
 - no confirmed dedicated RT2573 hardware AID register/field from OpenBSD sources; AID remains software-tracked
 - mac80211 RTS/CTS and CTS-to-self requests on supported station data TX now emit a dedicated protection frame (OpenBSD `rum_tx_data()` shape: protection frame first, then data frame)
 - protection requests on non-data frames, contradictory RTS+CTS requests, or protection-frame synthesis/submit failures are rejected conservatively (counted) rather than silently bypassed

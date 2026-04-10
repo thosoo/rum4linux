@@ -29,6 +29,8 @@ Current target is **DWA-111 (`07d1:3c06`, RT2571W + RT2528, 2.4 GHz)**.
 - Protection TX uses a narrow source-backed profile for this target branch: 2.4 GHz station path, 1 Mbps CCK protection frame descriptor rate, RTS protection frame requests ACK, CTS-to-self does not.
 - Unsupported protection cases are rejected conservatively and counted (non-data frame requests, contradictory RTS+CTS requests, or protection frame synthesis/submit failures); protected data is not sent unprotected.
 - TX status remains conservative and transport-completion based; no ACK success is claimed without confirmed hardware status ingestion.
+- Source audit result: OpenBSD `rum_txeof()` and Linux `rt73usb/rt2x00usb` both treat USB DMA completion as transport completion and do not expose a narrow per-frame ACK truth source for RT2573 in this path.
+- Added narrow observability from OpenBSD-aligned aggregate TX retry counters (`STA_CSR4/STA_CSR5` via `READ_MULTI_MAC`), recorded for reset/link diagnostics only (not mapped to per-frame mac80211 TX status).
 - Retry-limit programming uses confirmed `TXRX_CSR4` fields in the narrow path; there is no separate distinct MRR control step exposed beyond this register programming.
 
 ### RX path

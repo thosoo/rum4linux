@@ -271,6 +271,7 @@ static void dwr_link_tuner_workfn(struct work_struct *work)
 	struct dwr_dev *dwr =
 		container_of(to_delayed_work(work), struct dwr_dev, link_tuner_work);
 	u16 fcs_err = 0, plcp_err = 0, physical_err = 0, false_cca = 0;
+	u16 tx_no_retry = 0, tx_one_retry = 0, tx_multi_retry = 0, tx_retry_fail = 0;
 	s8 rssi;
 	bool have_rssi;
 	u8 low_bound, up_bound, next_vgc;
@@ -280,6 +281,16 @@ static void dwr_link_tuner_workfn(struct work_struct *work)
 
 	if (dwr_read_rx_error_counters(dwr, &fcs_err, &plcp_err, &physical_err, &false_cca))
 		goto reschedule;
+	if (!dwr_read_tx_retry_counters(dwr, &tx_no_retry, &tx_one_retry,
+					&tx_multi_retry, &tx_retry_fail)) {
+		dwr->tx_retry_stats_read_ok_count++;
+		dwr->tx_retry_no_retry_ok = tx_no_retry;
+		dwr->tx_retry_one_retry_ok = tx_one_retry;
+		dwr->tx_retry_multi_retry_ok = tx_multi_retry;
+		dwr->tx_retry_fail = tx_retry_fail;
+	} else {
+		dwr->tx_retry_stats_read_fail_count++;
+	}
 	(void)fcs_err;
 	(void)plcp_err;
 	(void)physical_err;
@@ -653,7 +664,7 @@ static void dwr_log_sta_rx_counters(struct dwr_dev *dwr, const char *reason)
 static void dwr_log_reset_summary(struct dwr_dev *dwr, const char *reason)
 {
 	dwr_info(&dwr->usb.intf->dev,
-		 "reset summary (%s): req_total=%u req_tx_submit=%u req_tx_complete=%u req_rx_complete=%u ok=%u fail=%u suppressed=%u last_reason=%s last_err=%d last_stage=%u last_fail_stage=%u replay_mode=%u last_reassoc=%u refresh={ok:%u fail:%u chan:%u retry:%u filter:%u} cooldown_active=%u in_progress=%u pending=%u blocked=%u\n",
+		 "reset summary (%s): req_total=%u req_tx_submit=%u req_tx_complete=%u req_rx_complete=%u ok=%u fail=%u suppressed=%u last_reason=%s last_err=%d last_stage=%u last_fail_stage=%u replay_mode=%u last_reassoc=%u refresh={ok:%u fail:%u chan:%u retry:%u filter:%u} tx_retry={read_ok:%u read_fail:%u no:%u one:%u multi:%u fail:%u} cooldown_active=%u in_progress=%u pending=%u blocked=%u\n",
 		 reason,
 		 dwr->reset_req_total,
 		 dwr->reset_req_tx_submit,
@@ -673,6 +684,12 @@ static void dwr_log_reset_summary(struct dwr_dev *dwr, const char *reason)
 		 dwr->started_refresh_channel_count,
 		 dwr->started_refresh_retry_count,
 		 dwr->started_refresh_filter_count,
+		 dwr->tx_retry_stats_read_ok_count,
+		 dwr->tx_retry_stats_read_fail_count,
+		 dwr->tx_retry_no_retry_ok,
+		 dwr->tx_retry_one_retry_ok,
+		 dwr->tx_retry_multi_retry_ok,
+		 dwr->tx_retry_fail,
 		 time_before(jiffies, dwr->reset_cooldown_until),
 		 !!test_bit(DWR_RESET_F_IN_PROGRESS, &dwr->reset_flags),
 		 !!test_bit(DWR_RESET_F_REQUESTED, &dwr->reset_flags),
