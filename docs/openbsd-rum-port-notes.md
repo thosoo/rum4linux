@@ -50,6 +50,7 @@ Current target is **DWA-111 (`07d1:3c06`, RT2571W + RT2528, 2.4 GHz)**.
 ### TX pressure / skb lifecycle
 
 - USB TX is now bounded by a small in-flight URB cap with mac80211 queue stop/wake backpressure.
+- In-flight accounting is per URB, including protected data transmissions that submit protection + data URBs, so queue stop/wake and watchdog timing track true USB outstanding work.
 - Submit/completion/cancel/reset paths update in-flight accounting coherently and keep skb ownership/reporting single-path, including reset-cancel vs teardown-cancel distinction.
 
 ### Capability truthfulness

@@ -24,6 +24,7 @@ Everything else is intentionally out of scope until separately source-backed and
 - symmetric disassociate/reassociate/stop/disconnect BSSID+TSF handling
 - conservative TX descriptor programming for CCK+OFDM PLCP fields
 - bounded USB TX in-flight model with mac80211 queue stop/wake backpressure
+- TX in-flight accounting is per submitted URB (including two-URB protected transmissions) so queue stop/wake and watchdog state reflect real USB in-flight pressure
 - bounded TX watchdog detects stalled in-flight TX and requests recovery
 - software duration updates using OpenBSD `rum_ack_rate()`/`rum_txtime()` formulas
 - retry-limit programming is implemented through `TXRX_CSR4` fields; no separate distinct MRR control path is currently exposed beyond that narrow register programming

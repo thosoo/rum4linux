@@ -500,17 +500,14 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 	bool need_rts;
 	bool need_cts;
 	bool no_ack;
+	int slots_needed;
+	int slots_acquired = 0;
+	int slots_submitted = 0;
 	int ret;
 
 	*ownership_transferred = false;
 	if (!READ_ONCE(dwr->usb.running))
 		return -ENETDOWN;
-	if (!dwr_tx_acquire_slot(dwr)) {
-		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
-		*ownership_transferred = true;
-		return -EBUSY;
-	}
-
 	if (skb->len < sizeof(struct ieee80211_hdr)) {
 		ret = -EINVAL;
 		goto fail_report;
@@ -519,6 +516,16 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 	fc = le16_to_cpu(((struct ieee80211_hdr *)skb->data)->frame_control);
 	need_rts = !!(info->control.rates[0].flags & IEEE80211_TX_RC_USE_RTS_CTS);
 	need_cts = !!(info->control.rates[0].flags & IEEE80211_TX_RC_USE_CTS_PROTECT);
+	slots_needed = (need_rts || need_cts) ? 2 : 1;
+
+	while (slots_acquired < slots_needed) {
+		if (!dwr_tx_acquire_slot(dwr)) {
+			ret = -EBUSY;
+			goto fail_report;
+		}
+		slots_acquired++;
+	}
+
 	if (need_rts || need_cts) {
 		if (!ieee80211_is_data(fc)) {
 			dwr->tx_protection_reject_count++;
@@ -555,7 +562,9 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 			dwr->tx_protection_reject_protected_data_count++;
 			goto fail_free_prot;
 		}
+		slots_submitted++;
 		skb_prot = NULL;
+		dwr_tx_progress(dwr, true);
 	}
 
 	ret = dwr_tx_build_desc(dwr, skb, &desc, info->control.rates[0].idx,
@@ -570,6 +579,7 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 				info->control.rates[0].count, no_ack, true);
 	if (ret)
 		goto fail_report;
+	slots_submitted++;
 
 	*ownership_transferred = true;
 	dwr_tx_progress(dwr, true);
@@ -579,7 +589,10 @@ fail_free_prot:
 	if (skb_prot)
 		ieee80211_free_txskb(dwr->hw, skb_prot);
 fail_report:
-	dwr_tx_release_slot(dwr);
+	while (slots_acquired > slots_submitted) {
+		dwr_tx_release_slot(dwr);
+		slots_acquired--;
+	}
 	if (ret == -ENOMEM)
 		dwr->tx_local_alloc_fail_count++;
 	else
