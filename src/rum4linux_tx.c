@@ -2,6 +2,7 @@
 #include <linux/usb.h>
 #include <linux/slab.h>
 #include <linux/ieee80211.h>
+#include <linux/etherdevice.h>
 #include "rum4linux_tx.h"
 #include "rum4linux_debug.h"
 
@@ -31,6 +32,13 @@ struct dwr_tx_urb_ctx {
 #define DWR_TX_MAX_FRAME_LEN 4095
 #define DWR_PLCP_LENGEXT BIT(7)
 #define DWR_PLCP_SHORT_PREAMBLE BIT(3)
+#define DWR_RUM_ACK_SIZE 14
+#define DWR_TX_MAX_INFLIGHT_URBS 32
+
+static void dwr_tx_report_failed(struct dwr_dev *dwr, struct sk_buff *skb, int rate_idx);
+static bool dwr_tx_acquire_slot(struct dwr_dev *dwr);
+static void dwr_tx_release_slot(struct dwr_dev *dwr);
+static void dwr_tx_log_summary(struct dwr_dev *dwr, const char *reason);
 
 static u8 dwr_plcp_signal(u8 rate_500k)
 {
@@ -117,12 +125,58 @@ static int dwr_tx_signal_rate_500k_from_idx(int idx, u8 *signal,
 	return 0;
 }
 
+static u8 dwr_ack_rate_500k(bool mode_11b_only, u8 tx_rate_500k)
+{
+	switch (tx_rate_500k) {
+	case 2:
+		return 2;
+	case 4:
+	case 11:
+	case 22:
+		return mode_11b_only ? 4 : tx_rate_500k;
+	case 12:
+	case 18:
+		return 12;
+	case 24:
+	case 36:
+		return 24;
+	case 48:
+	case 72:
+	case 96:
+	case 108:
+		return 48;
+	default:
+		return 2;
+	}
+}
+
+static u16 dwr_txtime_us(int len, u8 rate_500k, u32 conf_flags)
+{
+	u16 txtime;
+	bool ofdm = rate_500k >= 12;
+
+	if (ofdm) {
+		txtime = (8 + 4 * len + 3 + rate_500k - 1) / rate_500k;
+		txtime = 16 + 4 + 4 * txtime + 6;
+	} else {
+		txtime = (16 * len + rate_500k - 1) / rate_500k;
+		if (rate_500k != 2 && (conf_flags & IEEE80211_CONF_SHORT_PREAMBLE))
+			txtime += 72 + 24;
+		else
+			txtime += 144 + 48;
+	}
+	return txtime;
+}
+
 static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
 			     struct dwr_tx_desc_min *desc)
 {
+	struct ieee80211_hdr *hdr;
 	u16 plcp_length;
+	u16 dur;
 	u8 signal;
 	u8 rate_500k;
+	u8 ack_rate_500k;
 	u32 payload_len_crc;
 	u16 wme;
 	u32 flags;
@@ -130,6 +184,8 @@ static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
 	bool ofdm = false;
 	bool short_preamble;
 	const struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+	bool need_rts;
+	bool need_cts;
 	int ret;
 
 	if (!skb || skb->len == 0 || skb->len > DWR_TX_MAX_FRAME_LEN)
@@ -141,6 +197,33 @@ static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
 					       &signal, &rate_500k, &ofdm);
 	if (ret)
 		return ret;
+	ack_rate_500k = dwr_ack_rate_500k(false, rate_500k);
+	need_rts = !!(info->control.rates[0].flags & IEEE80211_TX_RC_USE_RTS_CTS);
+	need_cts = !!(info->control.rates[0].flags & IEEE80211_TX_RC_USE_CTS_PROTECT);
+	if (need_rts || need_cts) {
+		u16 fc;
+
+		if (skb->len < sizeof(struct ieee80211_hdr))
+			return -EINVAL;
+		fc = le16_to_cpu(((struct ieee80211_hdr *)skb->data)->frame_control);
+
+		/*
+		 * OpenBSD rum_tx_data() emits a dedicated protection frame before
+		 * data when RTS/CTS or CTS-to-self is required. This narrow port
+		 * does not synthesize that additional frame yet. Keep behavior
+		 * bounded: data frames may use conservative bypass; non-data
+		 * frames are rejected.
+		 */
+		if (!ieee80211_is_data(fc)) {
+			dwr->tx_protection_reject_count++;
+			return -EOPNOTSUPP;
+		}
+		dwr->tx_protection_bypass_count++;
+		if (__ratelimit(&net_ratelimit_state))
+			dwr_warn(&dwr->usb.intf->dev,
+				 "tx protection request bypassed (rts=%u cts=%u): no separate protection frame support yet\n",
+				 need_rts, need_cts);
+	}
 
 	flags = DWR_TX_VALID | DWR_TX_IFS_SIFS | (skb->len << 16);
 	if (ofdm)
@@ -181,8 +264,95 @@ static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
 			desc->plcp_signal |= DWR_PLCP_SHORT_PREAMBLE;
 	}
 
-	/* TODO(openbsd-rum-port): map ack-rate/duration/protection and multi-rate retry descriptor fields from if_rum.c. */
+	if (skb->len >= sizeof(*hdr))
+		hdr = (struct ieee80211_hdr *)skb->data;
+	else
+		hdr = NULL;
+	if (hdr && !is_multicast_ether_addr(hdr->addr1) &&
+	    !(info->flags & IEEE80211_TX_CTL_NO_ACK)) {
+		dur = dwr_txtime_us(DWR_RUM_ACK_SIZE, ack_rate_500k,
+				    dwr->hw->conf.flags) + DWR_RT2573_MAC_CSR8_SIFS_DEFAULT;
+		hdr->duration_id = cpu_to_le16(dur);
+	}
 	return 0;
+}
+
+static void dwr_tx_report_failed(struct dwr_dev *dwr, struct sk_buff *skb, int rate_idx)
+{
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+
+	ieee80211_tx_info_clear_status(info);
+	info->status.rates[0].idx = rate_idx;
+	info->status.rates[0].count = 0;
+	info->status.rates[1].idx = -1;
+	ieee80211_tx_status_irqsafe(dwr->hw, skb);
+}
+
+static bool dwr_tx_acquire_slot(struct dwr_dev *dwr)
+{
+	int old, new;
+
+	for (;;) {
+		old = atomic_read(&dwr->tx_inflight);
+		if (old >= DWR_TX_MAX_INFLIGHT_URBS) {
+			dwr->tx_reject_busy_count++;
+			if (!test_and_set_bit(DWR_TX_F_QUEUES_STOPPED, &dwr->tx_flags)) {
+				ieee80211_stop_queues(dwr->hw);
+				dwr->tx_queue_stop_count++;
+			}
+			return false;
+		}
+		new = old + 1;
+		if (atomic_cmpxchg(&dwr->tx_inflight, old, new) == old)
+			break;
+	}
+
+	if ((u32)new > dwr->tx_inflight_high_wm)
+		dwr->tx_inflight_high_wm = new;
+	if (new >= DWR_TX_MAX_INFLIGHT_URBS &&
+	    !test_and_set_bit(DWR_TX_F_QUEUES_STOPPED, &dwr->tx_flags)) {
+		ieee80211_stop_queues(dwr->hw);
+		dwr->tx_queue_stop_count++;
+	}
+	return true;
+}
+
+static void dwr_tx_release_slot(struct dwr_dev *dwr)
+{
+	int now;
+
+	now = atomic_dec_if_positive(&dwr->tx_inflight);
+	if (now < 0)
+		return;
+	if (now < DWR_TX_MAX_INFLIGHT_URBS - 1 &&
+	    test_and_clear_bit(DWR_TX_F_QUEUES_STOPPED, &dwr->tx_flags)) {
+		ieee80211_wake_queues(dwr->hw);
+		dwr->tx_queue_wake_count++;
+	}
+}
+
+static void dwr_tx_log_summary(struct dwr_dev *dwr, const char *reason)
+{
+	dwr_info(&dwr->usb.intf->dev,
+		 "tx summary (%s): inflight=%d high_wm=%u qstop=%u qwake=%u reject_busy=%u prot_bypass=%u prot_reject=%u desc_fail=%u alloc_fail=%u submit_fail=%u complete_fail=%u reset_cancel=%u teardown_cancel=%u watchdog={arm:%u fire:%u clear:%u} queues_stopped=%u\n",
+		 reason,
+		 atomic_read(&dwr->tx_inflight),
+		 dwr->tx_inflight_high_wm,
+		 dwr->tx_queue_stop_count,
+		 dwr->tx_queue_wake_count,
+		 dwr->tx_reject_busy_count,
+		 dwr->tx_protection_bypass_count,
+		 dwr->tx_protection_reject_count,
+		 dwr->tx_local_desc_fail_count,
+		 dwr->tx_local_alloc_fail_count,
+		 dwr->tx_submit_fail_count,
+		 dwr->tx_complete_fail_count,
+		 dwr->tx_reset_cancel_count,
+		 dwr->tx_teardown_cancel_count,
+		 dwr->tx_watchdog_arm_count,
+		 dwr->tx_watchdog_fire_count,
+		 dwr->tx_watchdog_clear_count,
+		 !!test_bit(DWR_TX_F_QUEUES_STOPPED, &dwr->tx_flags));
 }
 
 static void dwr_tx_complete(struct urb *urb)
@@ -194,16 +364,24 @@ static void dwr_tx_complete(struct urb *urb)
 		return;
 
 	if (ctx->skb) {
+		dwr_tx_release_slot(ctx->dwr);
+		dwr_tx_progress(ctx->dwr, atomic_read(&ctx->dwr->tx_inflight) > 0);
 		if (urb->status == -ENOENT || urb->status == -ECONNRESET ||
 		    urb->status == -ESHUTDOWN) {
-			ieee80211_free_txskb(ctx->dwr->hw, ctx->skb);
+			if (ctx->dwr->tx_cancel_reason == DWR_TX_CANCEL_RESET) {
+				ctx->dwr->tx_reset_cancel_count++;
+				dwr_tx_report_failed(ctx->dwr, ctx->skb, ctx->rate_idx);
+			} else {
+				ctx->dwr->tx_teardown_cancel_count++;
+				ieee80211_free_txskb(ctx->dwr->hw, ctx->skb);
+			}
 			goto out_free;
 		}
 
 		info = IEEE80211_SKB_CB(ctx->skb);
 		ieee80211_tx_info_clear_status(info);
 		info->status.rates[0].idx = ctx->rate_idx;
-		info->status.rates[0].count = max_t(u8, ctx->rate_count, 1);
+		info->status.rates[0].count = urb->status ? 0 : max_t(u8, ctx->rate_count, 1);
 		info->status.rates[1].idx = -1;
 		if (ctx->no_ack)
 			info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
@@ -215,6 +393,10 @@ static void dwr_tx_complete(struct urb *urb)
 		 * only when a confirmed RT2573 status source is wired in.
 		 */
 		ieee80211_tx_status_irqsafe(ctx->dwr->hw, ctx->skb);
+		if (urb->status) {
+			ctx->dwr->tx_complete_fail_count++;
+			dwr_request_reset(ctx->dwr, "tx-complete", urb->status);
+		}
 	}
 
 out_free:
@@ -237,20 +419,40 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 	*ownership_transferred = false;
 	if (!READ_ONCE(dwr->usb.running))
 		return -ENETDOWN;
+	if (!dwr_tx_acquire_slot(dwr)) {
+		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
+		*ownership_transferred = true;
+		return -EBUSY;
+	}
 
 	ret = dwr_tx_build_desc(dwr, skb, &desc);
-	if (ret)
+	if (ret) {
+		dwr_tx_release_slot(dwr);
+		dwr->tx_local_desc_fail_count++;
+		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
+		*ownership_transferred = true;
 		return ret;
+	}
 
 	total = sizeof(desc) + skb->len;
 	xfer_len = roundup(total, 4);
 	buf = kzalloc(xfer_len, GFP_ATOMIC);
 	if (!buf)
+	{
+		dwr_tx_release_slot(dwr);
+		dwr->tx_local_alloc_fail_count++;
+		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
+		*ownership_transferred = true;
 		return -ENOMEM;
+	}
 
 	ctx = kzalloc(sizeof(*ctx), GFP_ATOMIC);
 	if (!ctx) {
 		kfree(buf);
+		dwr_tx_release_slot(dwr);
+		dwr->tx_local_alloc_fail_count++;
+		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
+		*ownership_transferred = true;
 		return -ENOMEM;
 	}
 
@@ -258,6 +460,10 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 	if (!urb) {
 		kfree(ctx);
 		kfree(buf);
+		dwr_tx_release_slot(dwr);
+		dwr->tx_local_alloc_fail_count++;
+		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
+		*ownership_transferred = true;
 		return -ENOMEM;
 	}
 
@@ -282,15 +488,31 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 		usb_free_urb(urb);
 		kfree(ctx->buf);
 		kfree(ctx);
+		dwr_tx_release_slot(dwr);
+		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
+		*ownership_transferred = true;
+		dwr->tx_submit_fail_count++;
+		dwr_request_reset(dwr, "tx-submit", ret);
 		return ret;
 	}
 
 	*ownership_transferred = true;
 	usb_free_urb(urb);
+	dwr_tx_progress(dwr, true);
 	return 0;
 }
 
 void dwr_tx_cancel_pending(struct dwr_dev *dwr)
 {
 	usb_kill_anchored_urbs(&dwr->usb.tx_anchor);
+	atomic_set(&dwr->tx_inflight, 0);
+	dwr->tx_cancel_reason = DWR_TX_CANCEL_NONE;
+	dwr_tx_progress(dwr, false);
+	if (test_and_clear_bit(DWR_TX_F_QUEUES_STOPPED, &dwr->tx_flags)) {
+		if (!test_bit(DWR_RESET_F_BLOCKED, &dwr->reset_flags)) {
+			ieee80211_wake_queues(dwr->hw);
+			dwr->tx_queue_wake_count++;
+		}
+	}
+	dwr_tx_log_summary(dwr, "cancel_pending");
 }

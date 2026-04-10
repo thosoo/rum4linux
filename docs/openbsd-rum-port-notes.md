@@ -2,120 +2,71 @@
 
 ## Intent
 
-`rum4linux` is an early Linux scaffold inspired by OpenBSD `rum(4)`, being generalized toward the `rum(4)` family structure rather than a single USB product narrative.
+`rum4linux` is a narrow Linux station-client porting path guided primarily by OpenBSD `if_rum.c` and `if_rumreg.h`, with Linux `rt73usb/rt2x00` used only as behavioral cross-check where needed.
 
-This is a structural generalization pass, not a claim of broad functional enablement.
+Current target is **DWA-111 (`07d1:3c06`, RT2571W + RT2528, 2.4 GHz)**.
 
 ## Primary references
 
 - OpenBSD `sys/dev/usb/if_rum.c`
-  - EEPROM read flow
-  - microcode load flow
-  - BBP read/write/init flow
-  - RF write and channel programming sequencing
 - OpenBSD `sys/dev/usb/if_rumreg.h`
-  - vendor request IDs
-  - register offsets and BBP/RF bit definitions
-  - EEPROM offsets and RF identity values
-  - `RT2573_DEF_BBP`
-- Linux `rt73usb` lineage (`drivers/net/wireless/ralink/rt2x00/rt73usb.c/.h`)
-  - `rf_vals_bg_2528[]`
-  - txpower clamping conventions
+- Linux `drivers/net/wireless/ralink/rt2x00/rt73usb.c/.h` (cross-check only)
 
-## Implemented scaffold status (conservative)
+## Implemented in this patchset
 
-- module/DKMS identity: `rum4linux`
-- vendor request and core register access path for init scaffolding
-- EEPROM parse path with structured state capture
-- firmware upload scaffold and MCU handoff/wait sequence
-- BBP busy/read/write helpers and bounded init defaults
-- RF/channel scaffold for RT2528 2.4GHz path with bounded calibration mapping
-- narrow OpenBSD `rum_select_band()` 2.4GHz subset wired: BBP 17/35/96/97/98/104 + ext_2ghz_lna BBP 75/86/88 + PHY_CSR0 PA-path bit programming
-- bounded post-channel sanity and one bounded recovery attempt
-- bounded TX descriptor path with runtime bulk-OUT submission and mac80211 tx status handoff on URB completion
-- bounded RX scaffolding:
-  - fixed-size bulk-IN URB pool and per-URB buffers
-  - explicit start/stop/cancel/free teardown for stop/disconnect/error paths
-  - conservative descriptor parse of rt73/rum-style word0/word1 fields (length/drop/crc/ofdm/signal/rssi/frame-offset)
-  - debug logging and bounded RX counters
-  - URB resubmission while running
-  - strict frame boundary checks and conservative `ieee80211_rx_irqsafe()` delivery for packets with source-backed descriptor semantics
-- minimal station runtime hooks:
-  - single station interface gate
-  - station MAC programming via MAC_CSR2/3
-  - BSSID programming via MAC_CSR4/5
-  - conservative association state tracking
-  - explicit BSSID clear programming on disassociation/remove/stop/disconnect
-  - RX filter programming via TXRX_CSR0 from mac80211 filter flags
-  - TSF/basic-rates/ERP runtime programming via TXRX_CSR4/5/9 and MAC_CSR8/9
-  - EEPROM MAC used as primary station identity at probe (random fallback only if EEPROM parse fails)
-- RUN transition ordering aligned to if_rum.c for station path (channel -> slot/ERP -> MRR -> rates -> BSSID -> TSF sync)
-- explicit TSF-sync abort on RUN exit by clearing TXRX_CSR9 low 24 bits
-- RUN-entry TSF enable now requires both valid station BSSID and non-zero beacon interval; otherwise code conservatively aborts TSF sync instead of issuing a zero-interval enable sequence
-  - conservative TX retry-limit/fallback programming via TXRX_CSR4 (OpenBSD MRR naming and rt73usb OFDM-down/fallback naming treated as aliases for shared bits)
-  - TX status reports attempted rate/count but does not claim ACK success without hardware feedback
-  - OpenBSD rum(4) path exposes USB completion for TX but no host-visible per-frame ACK/retry result; current Linux port keeps that limitation explicit
-  - 2.4GHz station rate surface now includes 11b+11g with source-backed OFDM PLCP descriptor programming (signal/length + TX_OFDM flag), while ACK/retry truth remains transport-completion-limited
-  - initial bring-up and runtime channel transitions now use the same bounded 2.4GHz apply path (BBP profile, RF program, post-channel sanity, one bounded recovery attempt)
-  - channel-apply diagnostics now keep bounded counters and last-stage tagging (init/runtime split, first-pass failures, recovery attempt/success/failure, last channel/stage/error)
-  - channel-apply failures now also carry conservative error-class tagging (invalid/unsupported/timeout/io/sanity/unknown) based on existing stage+errno only
-  - channel-apply failures now include conservative error-origin attribution (sanity-read source vs sanity-pattern vs profile/rf/recovery origin) with bounded counters
-  - origin counters are failure-attribution counts only, and the latest failure snapshot is retained (stage/class/origin/errno + any successfully-captured sanity reads)
-  - channel-apply failure diagnostics now also retain one bounded delta snapshot that compares latest retained failure vs the immediately previous retained failure (runtime/init, channel/stage/class/origin/errno, and sanity value state as missing/same/changed)
-  - RX rate decode follows rum_rxrate()/rt73 semantics for both CCK and OFDM PLCP signal mappings into the current 2.4GHz 11b/11g rate table
-  - station-stop/disconnect logging now includes source-backed STA_CSR0/STA_CSR1 error counters (FCS/PLCP/physical/false-CCA)
-  - USB ID match surface is widened to the broader rum/rt73 family table, and probe now allows source-backed 2.4GHz bring-up for rf_rev 2528/2527/5225/5226 (5GHz band/channel bring-up is still deferred)
-  - RX filter parity tightened to rt73usb station behavior (DROP_ACK_CTS follows FIF_CONTROL; DROP_CONTROL follows FIF_CONTROL|FIF_PSPOLL)
-  - RX software delivery now follows active filter policy for failed-FCS and failed-PLCP/PHY classes: frames are dropped only when policy requests drop, and delivered failures are flagged/counted for mac80211 observability
-  - RX failure taxonomy is now tightened slightly for RT2573: explicit RX_CRC_ERROR remains the only concrete FCS class, while RX_DROP is treated as broader non-CRC descriptor-drop (not asserted as pure PLCP/PHY), still mapped through FIF_PLCPFAIL/RX failed-PLCP flag as a conservative policy proxy
-  - RUN-entry TXRX_CSR4 programming now uses one coherent final path for aliased MRR/OFDM-fallback fields
-  - conservative BBP17/VGC tuner is wired for associated station mode using rt73usb-backed inputs (RSSI, FCS, false-CCA); false_cca thresholds are intentionally conservative (>512 up, <100 down), and STA_CSR1 low-16 remains non-policy observability only
-  - BBP17/VGC tuner now uses the runtime 2.4GHz profile baseline (including ext_2ghz_lna offset) rather than a fixed 0x20 base
-  - narrow station timing defaults are now explicitly aligned to OpenBSD RT2573 source values: slot time 9/20us (rum_update_slot), TXRX_CSR9 beacon interval in 1/16ms with STA TSF mode (rum_enable_tsf_sync), MAC_CSR8 SIFS/OFDM-SIFS/EIFS from RT2573_DEF_MAC (0x016c030a), and TXRX_CSR0 RX_ACK_TIMEOUT/TSF_OFFSET from RT2573_DEF_MAC (0x025fb032)
-  - RX timing defaults are now applied in the narrow hardware-init path (`dwr_hw_init`) so active station bring-up does not depend on a separate mac80211-start call-site for TXRX_CSR0 timing defaults
-  - STA TSF-sync helper now explicitly preserves TXRX_CSR9[31:24] timestamp-compensation bits and reconstructs low TSF-control bits (interval + TSF mode/ticking/TBTT) to mirror OpenBSD `rum_enable_tsf_sync()` register-shape behavior
-  - TXRX_CSR9 timestamp-compensation byte value is still not source-confirmed as a fixed constant for this narrow path, so code preserves existing hardware/default value and keeps this as `TODO(openbsd-rum-port)`
+### Station state / RUN sequencing
 
-## Explicitly incomplete / deferred
+- BSS RUN programming remains OpenBSD-ordered: channel -> ERP/slot -> retry/MRR -> basic rates -> BSSID -> TSF sync.
+- `bss_info_changed()` now keeps station transitions symmetric and coherent for association, disassociation, reassociation, stop, and disconnect.
+- Runtime BSS shadowing is kept for bounded reset/recovery re-entry.
+- AID remains software-tracked only; no dedicated RT2573 hardware AID register/field was confirmed from OpenBSD sources.
 
-- complete TX descriptor and hardware ACK/retry status coverage for all `rum(4)`-family variants
-- confirmed RT2573 host-visible TX-result ingestion path (ACK/retry/failure truth) still not wired in this non-rt2x00 port
-- full TX duration/ACK-rate/protection (RTS/CTS/CTS-to-self) programming remains incomplete for broader parity with OpenBSD `rum_tx_data()`
-- high-confidence RX descriptor validation across additional variants/revisions beyond the current conservative mapping
-- association / operational station behavior
-- full source-backed validation of runtime timing defaults across revisions is still incomplete; current tightening is intentionally narrow to RT2573 station-path values confirmed from OpenBSD sources
-- hardware AID programming remains unresolved; primary-source review of OpenBSD `if_rum.c` + `if_rumreg.h` did not confirm a dedicated RT2573 station-path AID register/field, so current path keeps AID software-tracked with TODO(openbsd-rum-port)
-- fake-join tx-rate init from if_rum.c has no direct mac80211 equivalent in current narrow path and remains intentionally unported
-- broad per-device bring-up policies after USB ID match (5GHz bring-up for RF2527/RF5225/RF5226 still `TODO(openbsd-rum-port)`)
-- broad firmware naming certainty across the whole family
+### TX path (narrow RT2573 subset)
 
-Uncertain parts should stay tagged as `TODO(openbsd-rum-port)` until confirmed from primary sources.
+- PLCP CCK/OFDM programming remains OpenBSD-shaped (`rum_setup_tx_desc()`).
+- ACK-rate and duration programming now follow OpenBSD formulas (`rum_ack_rate()`, `rum_txtime()`) for unicast data duration updates.
+- Protection requests (RTS/CTS or CTS-to-self) use a bounded policy: non-data frames are rejected, while data frames may use conservative bypass (tracked + logged); full OpenBSD-style separate protection frame emission is still not implemented.
+- TX status remains conservative and transport-completion based; no ACK success is claimed without confirmed hardware status ingestion.
+- Retry-limit programming uses confirmed `TXRX_CSR4` fields in the narrow path; there is no separate distinct MRR control step exposed beyond this register programming.
 
-Current RX descriptor assumptions are intentionally narrow and source-backed:
+### RX path
 
-- `word0` data-byte-count extraction and drop/CRC/ofdm flag usage from Linux `rt73usb` receive path.
-- `word1` signal/rssi/frame-offset extraction pattern from Linux `rt73usb`.
-- OpenBSD `if_rum.c` framing model (USB payload includes descriptor metadata plus frame body).
-- RT2573/rt73 receive paths use descriptor byte-count directly for frame length; this narrow port now mirrors that (no unconditional FCS subtraction from RXD byte-count).
-- OpenBSD `if_rum.c` and Linux rt73usb both treat frame start as immediately after the fixed 24-byte RX descriptor; this narrow port now mirrors that and ignores non-zero descriptor frame-offset for narrow RT2573 behavior while keeping broader semantics TODO-scoped.
-- OpenBSD `rum_rxrate()` fallback behavior returns 1 Mbps-equivalent on unknown signal; this narrow port now mirrors that conservatively by falling back to CCK idx 0 instead of dropping frames solely due to unknown descriptor signal value.
-- RX RSSI now follows the rt73usb AGC/LNA field decode shape for RT2573 lineage (`word1` AGC/LNA-derived dBm), rather than treating `word1[15:8]` as a raw RSSI byte.
-- CCK TX PLCP programming now mirrors OpenBSD `rum_setup_tx_desc()` details for the narrow path: 11 Mbps `PLCP_LENGEXT` service-bit handling and short-preamble signal-bit application when short preamble is configured.
-- TX bulk submissions now round descriptor+frame transfer length to a 4-byte boundary, mirroring OpenBSD `rum_tx_data()` xfer length shaping.
-- RX parser now mirrors OpenBSD-style conservative gating on receive completion by rejecting BUSY descriptors and descriptor payload lengths shorter than `ieee80211_frame_min` before delivery.
-- RX bulk completion now uses a bounded cursor walker over URB payload to process multiple descriptor+frame records conservatively when present; valid earlier records are delivered before stopping on malformed/trailing data.
+- RX descriptor and frame handling remains conservative/source-backed for RT2573 narrow path.
+- Delivery path supports scan/auth/assoc/EAPOL/data traffic classes with filter-driven failed-frame behavior.
 
-Any broader bit semantics or per-revision behavior remain `TODO(openbsd-rum-port)`.
+### Reset/recovery
 
-`RXD_W0_DROP`/`RT2573_RX_DROP` remains a broad descriptor bit in available sources; in this narrow port it is treated as a non-CRC descriptor-drop class. Because no dedicated mac80211 “generic RX drop” failure policy exists for this path, `FIF_PLCPFAIL` and RX failed-PLCP flagging are used as conservative proxies only. Fuller cause mapping remains `TODO(openbsd-rum-port)`.
+- Added bounded reset/recovery workqueue path for realistic recoverable USB fault classes:
+  - TX submit failures
+  - TX/RX completion errors (non-cancel statuses)
+- Recovery performs stop/reinit/restart and restores station runtime programming when possible.
+- Reset scheduling/execution is now race-hardened with reset flags + mutex and compact counters for request reason/success/failure/last stage.
+- Reset replay now has explicit started-unassociated restore before optional associated RUN re-entry.
+- Added TX watchdog (bounded timeout) to detect stalled in-flight TX and request reset.
+- Added reset storm cooldown to suppress repeated immediate resets under persistent fault loops.
 
-## Device-ID and coverage policy
+### TX pressure / skb lifecycle
 
-- Naming/docs are generalized to `rum(4)` family scope.
-- Actual runtime binding remains intentionally conservative.
-- If only a narrow USB ID set is enabled in code, that is intentional until broader per-device validation is complete.
+- USB TX is now bounded by a small in-flight URB cap with mac80211 queue stop/wake backpressure.
+- Submit/completion/cancel/reset paths update in-flight accounting coherently and keep skb ownership/reporting single-path, including reset-cancel vs teardown-cancel distinction.
 
-## Workflow policy at this stage
+### Capability truthfulness
 
-- Keep safety-first defaults (`bind=0`).
-- Do not treat this tree as ready for functional verification.
+- `IEEE80211_HW_SUPPORTS_PS` is no longer advertised.
+- Probe USB ID match table is narrowed to the target DWA-111 ID (`07d1:3c06`).
+- Runtime RF acceptance is also narrowed to RT2528 only for this target-first branch.
+
+## Deliberately not implemented (not source-confirmed or broader than target)
+
+- host-visible per-frame RT2573 ACK/retry truth path
+- full OpenBSD-equivalent protection-frame offload mechanics (separate RTS/CTS/CTS-self frame TX)
+- broad rum(4) family USB ID enablement
+- 5 GHz bring-up path
+
+## Remaining blockers after this patchset
+
+- Real-hardware confirmation of long-run stability (association churn, poor-RF edge cases).
+- Better hardware-backed TX result visibility if a confirmed status path can be wired without guessing.
+- Full protection-frame behavior parity if needed for difficult mixed B/G environments.
+
+Any uncertain behavior stays explicitly conservative and source-scoped.
