@@ -23,12 +23,15 @@ struct dwr_tx_urb_ctx {
 	s8 rate_idx;
 	u8 rate_count;
 	bool no_ack;
+	bool report_tx_status;
 };
 
 #define DWR_TX_VALID BIT(1)
 #define DWR_TX_IFS_SIFS BIT(6)
 #define DWR_TX_NEED_ACK BIT(3)
 #define DWR_TX_OFDM BIT(5)
+#define DWR_TX_MORE_FRAG BIT(2)
+#define DWR_TX_LONG_RETRY BIT(7)
 #define DWR_TX_MAX_FRAME_LEN 4095
 #define DWR_PLCP_LENGEXT BIT(7)
 #define DWR_PLCP_SHORT_PREAMBLE BIT(3)
@@ -39,6 +42,7 @@ static void dwr_tx_report_failed(struct dwr_dev *dwr, struct sk_buff *skb, int r
 static bool dwr_tx_acquire_slot(struct dwr_dev *dwr);
 static void dwr_tx_release_slot(struct dwr_dev *dwr);
 static void dwr_tx_log_summary(struct dwr_dev *dwr, const char *reason);
+static void dwr_tx_complete(struct urb *urb);
 
 static u8 dwr_plcp_signal(u8 rate_500k)
 {
@@ -169,7 +173,9 @@ static u16 dwr_txtime_us(int len, u8 rate_500k, u32 conf_flags)
 }
 
 static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
-			     struct dwr_tx_desc_min *desc)
+			     struct dwr_tx_desc_min *desc, s8 rate_idx,
+			     u32 extra_flags, bool no_ack,
+			     bool skip_duration_update)
 {
 	struct ieee80211_hdr *hdr;
 	u16 plcp_length;
@@ -183,9 +189,6 @@ static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
 	u32 remainder;
 	bool ofdm = false;
 	bool short_preamble;
-	const struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
-	bool need_rts;
-	bool need_cts;
 	int ret;
 
 	if (!skb || skb->len == 0 || skb->len > DWR_TX_MAX_FRAME_LEN)
@@ -193,42 +196,16 @@ static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
 
 	memset(desc, 0, sizeof(*desc));
 
-	ret = dwr_tx_signal_rate_500k_from_idx(info->control.rates[0].idx,
+	ret = dwr_tx_signal_rate_500k_from_idx(rate_idx,
 					       &signal, &rate_500k, &ofdm);
 	if (ret)
 		return ret;
 	ack_rate_500k = dwr_ack_rate_500k(false, rate_500k);
-	need_rts = !!(info->control.rates[0].flags & IEEE80211_TX_RC_USE_RTS_CTS);
-	need_cts = !!(info->control.rates[0].flags & IEEE80211_TX_RC_USE_CTS_PROTECT);
-	if (need_rts || need_cts) {
-		u16 fc;
 
-		if (skb->len < sizeof(struct ieee80211_hdr))
-			return -EINVAL;
-		fc = le16_to_cpu(((struct ieee80211_hdr *)skb->data)->frame_control);
-
-		/*
-		 * OpenBSD rum_tx_data() emits a dedicated protection frame before
-		 * data when RTS/CTS or CTS-to-self is required. This narrow port
-		 * does not synthesize that additional frame yet. Keep behavior
-		 * bounded: data frames may use conservative bypass; non-data
-		 * frames are rejected.
-		 */
-		if (!ieee80211_is_data(fc)) {
-			dwr->tx_protection_reject_count++;
-			return -EOPNOTSUPP;
-		}
-		dwr->tx_protection_bypass_count++;
-		if (__ratelimit(&net_ratelimit_state))
-			dwr_warn(&dwr->usb.intf->dev,
-				 "tx protection request bypassed (rts=%u cts=%u): no separate protection frame support yet\n",
-				 need_rts, need_cts);
-	}
-
-	flags = DWR_TX_VALID | DWR_TX_IFS_SIFS | (skb->len << 16);
+	flags = DWR_TX_VALID | DWR_TX_IFS_SIFS | extra_flags | (skb->len << 16);
 	if (ofdm)
 		flags |= DWR_TX_OFDM;
-	if (!(info->flags & IEEE80211_TX_CTL_NO_ACK))
+	if (!no_ack)
 		flags |= DWR_TX_NEED_ACK;
 	desc->flags = cpu_to_le32(flags);
 
@@ -268,13 +245,114 @@ static int dwr_tx_build_desc(struct dwr_dev *dwr, struct sk_buff *skb,
 		hdr = (struct ieee80211_hdr *)skb->data;
 	else
 		hdr = NULL;
-	if (hdr && !is_multicast_ether_addr(hdr->addr1) &&
-	    !(info->flags & IEEE80211_TX_CTL_NO_ACK)) {
+	if (!skip_duration_update && hdr && !is_multicast_ether_addr(hdr->addr1) &&
+	    !no_ack) {
 		dur = dwr_txtime_us(DWR_RUM_ACK_SIZE, ack_rate_500k,
 				    dwr->hw->conf.flags) + DWR_RT2573_MAC_CSR8_SIFS_DEFAULT;
 		hdr->duration_id = cpu_to_le16(dur);
 	}
 	return 0;
+}
+
+static int dwr_tx_submit_urb(struct dwr_dev *dwr, struct sk_buff *skb,
+			     struct dwr_tx_desc_min *desc, s8 rate_idx,
+			     u8 rate_count, bool no_ack, bool report_tx_status)
+{
+	struct dwr_tx_urb_ctx *ctx;
+	struct urb *urb;
+	u8 *buf;
+	size_t xfer_len;
+	size_t total;
+	int ret;
+
+	total = sizeof(*desc) + skb->len;
+	xfer_len = roundup(total, 4);
+	buf = kzalloc(xfer_len, GFP_ATOMIC);
+	if (!buf) {
+		dwr->tx_local_alloc_fail_count++;
+		return -ENOMEM;
+	}
+
+	ctx = kzalloc(sizeof(*ctx), GFP_ATOMIC);
+	if (!ctx) {
+		kfree(buf);
+		dwr->tx_local_alloc_fail_count++;
+		return -ENOMEM;
+	}
+
+	urb = usb_alloc_urb(0, GFP_ATOMIC);
+	if (!urb) {
+		kfree(ctx);
+		kfree(buf);
+		dwr->tx_local_alloc_fail_count++;
+		return -ENOMEM;
+	}
+
+	memcpy(buf, desc, sizeof(*desc));
+	memcpy(buf + sizeof(*desc), skb->data, skb->len);
+
+	ctx->dwr = dwr;
+	ctx->skb = skb;
+	ctx->buf = buf;
+	ctx->rate_idx = rate_idx;
+	ctx->rate_count = rate_count;
+	ctx->no_ack = no_ack;
+	ctx->report_tx_status = report_tx_status;
+
+	usb_fill_bulk_urb(urb, dwr->usb.udev,
+			  usb_sndbulkpipe(dwr->usb.udev, dwr->usb.bulk_out_ep),
+			  buf, xfer_len, dwr_tx_complete, ctx);
+	usb_anchor_urb(urb, &dwr->usb.tx_anchor);
+
+	ret = usb_submit_urb(urb, GFP_ATOMIC);
+	if (ret) {
+		usb_unanchor_urb(urb);
+		usb_free_urb(urb);
+		kfree(ctx->buf);
+		kfree(ctx);
+		dwr->tx_submit_fail_count++;
+		return ret;
+	}
+
+	usb_free_urb(urb);
+	return 0;
+}
+
+static struct sk_buff *dwr_tx_build_protection_skb(struct dwr_dev *dwr,
+						    struct sk_buff *data_skb,
+						    bool use_rts)
+{
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(data_skb);
+	struct sk_buff *skb;
+
+	if (!dwr->vif_sta)
+		return ERR_PTR(-ENOTSUPP);
+
+	if (use_rts) {
+		struct ieee80211_rts rts;
+
+		memset(&rts, 0, sizeof(rts));
+		ieee80211_rts_get(dwr->hw, dwr->vif_sta, data_skb->data, data_skb->len,
+				  info, &rts);
+		skb = dev_alloc_skb(sizeof(rts));
+		if (!skb)
+			return ERR_PTR(-ENOMEM);
+		skb_put_data(skb, &rts, sizeof(rts));
+		return skb;
+	}
+
+	{
+		struct ieee80211_cts cts;
+
+		memset(&cts, 0, sizeof(cts));
+		ieee80211_ctstoself_get(dwr->hw, dwr->vif_sta, data_skb->data,
+					data_skb->len, info, &cts);
+		skb = dev_alloc_skb(sizeof(cts));
+		if (!skb)
+			return ERR_PTR(-ENOMEM);
+		skb_put_data(skb, &cts, sizeof(cts));
+		return skb;
+	}
 }
 
 static void dwr_tx_report_failed(struct dwr_dev *dwr, struct sk_buff *skb, int rate_idx)
@@ -370,7 +448,10 @@ static void dwr_tx_complete(struct urb *urb)
 		    urb->status == -ESHUTDOWN) {
 			if (ctx->dwr->tx_cancel_reason == DWR_TX_CANCEL_RESET) {
 				ctx->dwr->tx_reset_cancel_count++;
-				dwr_tx_report_failed(ctx->dwr, ctx->skb, ctx->rate_idx);
+				if (ctx->report_tx_status)
+					dwr_tx_report_failed(ctx->dwr, ctx->skb, ctx->rate_idx);
+				else
+					ieee80211_free_txskb(ctx->dwr->hw, ctx->skb);
 			} else {
 				ctx->dwr->tx_teardown_cancel_count++;
 				ieee80211_free_txskb(ctx->dwr->hw, ctx->skb);
@@ -378,21 +459,25 @@ static void dwr_tx_complete(struct urb *urb)
 			goto out_free;
 		}
 
-		info = IEEE80211_SKB_CB(ctx->skb);
-		ieee80211_tx_info_clear_status(info);
-		info->status.rates[0].idx = ctx->rate_idx;
-		info->status.rates[0].count = urb->status ? 0 : max_t(u8, ctx->rate_count, 1);
-		info->status.rates[1].idx = -1;
-		if (ctx->no_ack)
-			info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
-		/*
-		 * OpenBSD rum(4) txeof() has only USB transfer completion and no
-		 * host-visible per-frame ACK/retry report. Linux rt73usb uses a
-		 * richer rt2x00 path that is not yet ported here.
-		 * TODO(openbsd-rum-port): add hardware-backed TX result ingestion
-		 * only when a confirmed RT2573 status source is wired in.
-		 */
-		ieee80211_tx_status_irqsafe(ctx->dwr->hw, ctx->skb);
+		if (ctx->report_tx_status) {
+			info = IEEE80211_SKB_CB(ctx->skb);
+			ieee80211_tx_info_clear_status(info);
+			info->status.rates[0].idx = ctx->rate_idx;
+			info->status.rates[0].count = urb->status ? 0 : max_t(u8, ctx->rate_count, 1);
+			info->status.rates[1].idx = -1;
+			if (ctx->no_ack)
+				info->flags |= IEEE80211_TX_STAT_NOACK_TRANSMITTED;
+			/*
+			 * OpenBSD rum(4) txeof() has only USB transfer completion and no
+			 * host-visible per-frame ACK/retry report. Linux rt73usb uses a
+			 * richer rt2x00 path that is not yet ported here.
+			 * TODO(openbsd-rum-port): add hardware-backed TX result ingestion
+			 * only when a confirmed RT2573 status source is wired in.
+			 */
+			ieee80211_tx_status_irqsafe(ctx->dwr->hw, ctx->skb);
+		} else {
+			ieee80211_free_txskb(ctx->dwr->hw, ctx->skb);
+		}
 		if (urb->status) {
 			ctx->dwr->tx_complete_fail_count++;
 			dwr_request_reset(ctx->dwr, "tx-complete", urb->status);
@@ -408,98 +493,116 @@ int dwr_tx_submit_frame(struct dwr_dev *dwr, struct sk_buff *skb,
 			bool *ownership_transferred)
 {
 	struct dwr_tx_desc_min desc;
+	struct dwr_tx_desc_min prot_desc;
 	const struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
-	struct dwr_tx_urb_ctx *ctx;
-	struct urb *urb;
-	u8 *buf;
-	size_t xfer_len;
+	struct sk_buff *skb_prot = NULL;
+	u16 fc;
+	bool need_rts;
+	bool need_cts;
+	bool no_ack;
+	int slots_needed;
+	int slots_acquired = 0;
+	int slots_submitted = 0;
 	int ret;
-	size_t total;
 
 	*ownership_transferred = false;
 	if (!READ_ONCE(dwr->usb.running))
 		return -ENETDOWN;
-	if (!dwr_tx_acquire_slot(dwr)) {
-		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
-		*ownership_transferred = true;
-		return -EBUSY;
+	if (skb->len < sizeof(struct ieee80211_hdr)) {
+		ret = -EINVAL;
+		goto fail_report;
 	}
 
-	ret = dwr_tx_build_desc(dwr, skb, &desc);
+	fc = le16_to_cpu(((struct ieee80211_hdr *)skb->data)->frame_control);
+	need_rts = !!(info->control.rates[0].flags & IEEE80211_TX_RC_USE_RTS_CTS);
+	need_cts = !!(info->control.rates[0].flags & IEEE80211_TX_RC_USE_CTS_PROTECT);
+	slots_needed = (need_rts || need_cts) ? 2 : 1;
+
+	while (slots_acquired < slots_needed) {
+		if (!dwr_tx_acquire_slot(dwr)) {
+			ret = -EBUSY;
+			goto fail_report;
+		}
+		slots_acquired++;
+	}
+
+	if (need_rts || need_cts) {
+		if (!ieee80211_is_data(fc)) {
+			dwr->tx_protection_reject_count++;
+			dwr->tx_protection_reject_non_data_count++;
+			ret = -EOPNOTSUPP;
+			goto fail_report;
+		}
+		if (need_rts && need_cts) {
+			dwr->tx_protection_reject_count++;
+			ret = -EINVAL;
+			goto fail_report;
+		}
+
+		skb_prot = dwr_tx_build_protection_skb(dwr, skb, need_rts);
+		if (IS_ERR(skb_prot)) {
+			dwr->tx_protection_reject_count++;
+			dwr->tx_protection_reject_protected_data_count++;
+			ret = PTR_ERR(skb_prot);
+			skb_prot = NULL;
+			goto fail_report;
+		}
+		ret = dwr_tx_build_desc(dwr, skb_prot, &prot_desc, 0,
+					DWR_TX_MORE_FRAG, !need_rts, true);
+		if (ret) {
+			dwr->tx_protection_reject_count++;
+			dwr->tx_protection_reject_protected_data_count++;
+			goto fail_free_prot;
+		}
+
+		ret = dwr_tx_submit_urb(dwr, skb_prot, &prot_desc, 0, 1,
+					!need_rts, false);
+		if (ret) {
+			dwr->tx_protection_reject_count++;
+			dwr->tx_protection_reject_protected_data_count++;
+			goto fail_free_prot;
+		}
+		slots_submitted++;
+		skb_prot = NULL;
+		dwr_tx_progress(dwr, true);
+	}
+
+	ret = dwr_tx_build_desc(dwr, skb, &desc, info->control.rates[0].idx,
+				(need_rts || need_cts) ? DWR_TX_LONG_RETRY : 0,
+				!!(info->flags & IEEE80211_TX_CTL_NO_ACK), false);
 	if (ret) {
-		dwr_tx_release_slot(dwr);
-		dwr->tx_local_desc_fail_count++;
-		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
-		*ownership_transferred = true;
-		return ret;
+		goto fail_report;
 	}
 
-	total = sizeof(desc) + skb->len;
-	xfer_len = roundup(total, 4);
-	buf = kzalloc(xfer_len, GFP_ATOMIC);
-	if (!buf)
-	{
-		dwr_tx_release_slot(dwr);
-		dwr->tx_local_alloc_fail_count++;
-		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
-		*ownership_transferred = true;
-		return -ENOMEM;
-	}
-
-	ctx = kzalloc(sizeof(*ctx), GFP_ATOMIC);
-	if (!ctx) {
-		kfree(buf);
-		dwr_tx_release_slot(dwr);
-		dwr->tx_local_alloc_fail_count++;
-		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
-		*ownership_transferred = true;
-		return -ENOMEM;
-	}
-
-	urb = usb_alloc_urb(0, GFP_ATOMIC);
-	if (!urb) {
-		kfree(ctx);
-		kfree(buf);
-		dwr_tx_release_slot(dwr);
-		dwr->tx_local_alloc_fail_count++;
-		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
-		*ownership_transferred = true;
-		return -ENOMEM;
-	}
-
-	memcpy(buf, &desc, sizeof(desc));
-	memcpy(buf + sizeof(desc), skb->data, skb->len);
-
-	ctx->dwr = dwr;
-	ctx->skb = skb;
-	ctx->buf = buf;
-	ctx->rate_idx = info->control.rates[0].idx;
-	ctx->rate_count = info->control.rates[0].count;
-	ctx->no_ack = !!(info->flags & IEEE80211_TX_CTL_NO_ACK);
-
-	usb_fill_bulk_urb(urb, dwr->usb.udev,
-			 usb_sndbulkpipe(dwr->usb.udev, dwr->usb.bulk_out_ep),
-			 buf, xfer_len, dwr_tx_complete, ctx);
-	usb_anchor_urb(urb, &dwr->usb.tx_anchor);
-
-	ret = usb_submit_urb(urb, GFP_ATOMIC);
-	if (ret) {
-		usb_unanchor_urb(urb);
-		usb_free_urb(urb);
-		kfree(ctx->buf);
-		kfree(ctx);
-		dwr_tx_release_slot(dwr);
-		dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
-		*ownership_transferred = true;
-		dwr->tx_submit_fail_count++;
-		dwr_request_reset(dwr, "tx-submit", ret);
-		return ret;
-	}
+	no_ack = !!(info->flags & IEEE80211_TX_CTL_NO_ACK);
+	ret = dwr_tx_submit_urb(dwr, skb, &desc, info->control.rates[0].idx,
+				info->control.rates[0].count, no_ack, true);
+	if (ret)
+		goto fail_report;
+	slots_submitted++;
 
 	*ownership_transferred = true;
-	usb_free_urb(urb);
 	dwr_tx_progress(dwr, true);
 	return 0;
+
+fail_free_prot:
+	if (skb_prot)
+		ieee80211_free_txskb(dwr->hw, skb_prot);
+fail_report:
+	while (slots_acquired > slots_submitted) {
+		dwr_tx_release_slot(dwr);
+		slots_acquired--;
+	}
+	if (ret == -ENOMEM)
+		dwr->tx_local_alloc_fail_count++;
+	else
+		dwr->tx_local_desc_fail_count++;
+	dwr_tx_report_failed(dwr, skb, info->control.rates[0].idx);
+	*ownership_transferred = true;
+	if (ret == -EIO || ret == -ESHUTDOWN || ret == -ENODEV || ret == -EPROTO ||
+	    ret == -ETIME || ret == -ETIMEDOUT)
+		dwr_request_reset(dwr, "tx-submit", ret);
+	return ret;
 }
 
 void dwr_tx_cancel_pending(struct dwr_dev *dwr)

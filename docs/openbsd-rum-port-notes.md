@@ -25,8 +25,12 @@ Current target is **DWA-111 (`07d1:3c06`, RT2571W + RT2528, 2.4 GHz)**.
 
 - PLCP CCK/OFDM programming remains OpenBSD-shaped (`rum_setup_tx_desc()`).
 - ACK-rate and duration programming now follow OpenBSD formulas (`rum_ack_rate()`, `rum_txtime()`) for unicast data duration updates.
-- Protection requests (RTS/CTS or CTS-to-self) use a bounded policy: non-data frames are rejected, while data frames may use conservative bypass (tracked + logged); full OpenBSD-style separate protection frame emission is still not implemented.
+- Protection requests (RTS/CTS or CTS-to-self) for supported station data TX now follow OpenBSD `rum_tx_data()` shape by emitting a dedicated protection frame first, followed by the data frame.
+- Protection TX uses a narrow source-backed profile for this target branch: 2.4 GHz station path, 1 Mbps CCK protection frame descriptor rate, RTS protection frame requests ACK, CTS-to-self does not.
+- Unsupported protection cases are rejected conservatively and counted (non-data frame requests, contradictory RTS+CTS requests, or protection frame synthesis/submit failures); protected data is not sent unprotected.
 - TX status remains conservative and transport-completion based; no ACK success is claimed without confirmed hardware status ingestion.
+- Source audit result: OpenBSD `rum_txeof()` and Linux `rt73usb/rt2x00usb` both treat USB DMA completion as transport completion and do not expose a narrow per-frame ACK truth source for RT2573 in this path.
+- Added narrow observability from OpenBSD-aligned aggregate TX retry counters (`STA_CSR4/STA_CSR5` via `READ_MULTI_MAC`), recorded for reset/link diagnostics only (not mapped to per-frame mac80211 TX status).
 - Retry-limit programming uses confirmed `TXRX_CSR4` fields in the narrow path; there is no separate distinct MRR control step exposed beyond this register programming.
 
 ### RX path
@@ -48,6 +52,7 @@ Current target is **DWA-111 (`07d1:3c06`, RT2571W + RT2528, 2.4 GHz)**.
 ### TX pressure / skb lifecycle
 
 - USB TX is now bounded by a small in-flight URB cap with mac80211 queue stop/wake backpressure.
+- In-flight accounting is per URB, including protected data transmissions that submit protection + data URBs, so queue stop/wake and watchdog timing track true USB outstanding work.
 - Submit/completion/cancel/reset paths update in-flight accounting coherently and keep skb ownership/reporting single-path, including reset-cancel vs teardown-cancel distinction.
 
 ### Capability truthfulness
@@ -59,7 +64,7 @@ Current target is **DWA-111 (`07d1:3c06`, RT2571W + RT2528, 2.4 GHz)**.
 ## Deliberately not implemented (not source-confirmed or broader than target)
 
 - host-visible per-frame RT2573 ACK/retry truth path
-- full OpenBSD-equivalent protection-frame offload mechanics (separate RTS/CTS/CTS-self frame TX)
+- full family-wide protection behavior beyond the narrow DWA-111 station target (no monitor/AP/IBSS extension, no broader USB ID enablement)
 - broad rum(4) family USB ID enablement
 - 5 GHz bring-up path
 
@@ -67,6 +72,6 @@ Current target is **DWA-111 (`07d1:3c06`, RT2571W + RT2528, 2.4 GHz)**.
 
 - Real-hardware confirmation of long-run stability (association churn, poor-RF edge cases).
 - Better hardware-backed TX result visibility if a confirmed status path can be wired without guessing.
-- Full protection-frame behavior parity if needed for difficult mixed B/G environments.
+- Additional real-hardware validation for mixed B/G protection edge cases and long-run retry/reset interaction.
 
 Any uncertain behavior stays explicitly conservative and source-scoped.

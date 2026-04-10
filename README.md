@@ -24,6 +24,7 @@ Everything else is intentionally out of scope until separately source-backed and
 - symmetric disassociate/reassociate/stop/disconnect BSSID+TSF handling
 - conservative TX descriptor programming for CCK+OFDM PLCP fields
 - bounded USB TX in-flight model with mac80211 queue stop/wake backpressure
+- TX in-flight accounting is per submitted URB (including two-URB protected transmissions) so queue stop/wake and watchdog state reflect real USB in-flight pressure
 - bounded TX watchdog detects stalled in-flight TX and requests recovery
 - software duration updates using OpenBSD `rum_ack_rate()`/`rum_txtime()` formulas
 - retry-limit programming is implemented through `TXRX_CSR4` fields; no separate distinct MRR control path is currently exposed beyond that narrow register programming
@@ -31,13 +32,16 @@ Everything else is intentionally out of scope until separately source-backed and
 - bounded reset/recovery workqueue path for realistic TX/RX USB fault classes
 - reset storm control with cooldown suppresses repeated immediate resets
 - reset observability counters/log summary for request reasons and last recovery stage/failure point
+- narrow TX retry observability via RT2573 `STA_CSR4/STA_CSR5` aggregate counters (no per-frame ACK truth)
 
 ## Truthful limitations that remain
 
 - no confirmed host-visible RT2573 per-frame ACK/retry status ingestion path is wired
 - tx status remains conservative and does not claim hardware ACK truth
+- RT2573 `STA_CSR4/STA_CSR5` counters are aggregate snapshots only; they are useful for validation/tuning but cannot be mapped back to individual frames
 - no confirmed dedicated RT2573 hardware AID register/field from OpenBSD sources; AID remains software-tracked
-- RTS/CTS and CTS-to-self offload requests follow a bounded policy: non-data frames are rejected; data frames may use conservative bypass (counted + logged), because OpenBSD-equivalent separate protection-frame emission is not implemented yet
+- mac80211 RTS/CTS and CTS-to-self requests on supported station data TX now emit a dedicated protection frame (OpenBSD `rum_tx_data()` shape: protection frame first, then data frame)
+- protection requests on non-data frames, contradictory RTS+CTS requests, or protection-frame synthesis/submit failures are rejected conservatively (counted) rather than silently bypassed
 - only USB ID `07d1:3c06` is matched in this target-first branch
 - no 5 GHz support
 

@@ -1203,3 +1203,31 @@ int dwr_read_rx_error_counters(struct dwr_dev *dwr, u16 *fcs_err,
 
 	return 0;
 }
+
+int dwr_read_tx_retry_counters(struct dwr_dev *dwr, u16 *no_retry_ok,
+			       u16 *one_retry_ok, u16 *multi_retry_ok,
+			       u16 *retry_fail)
+{
+	__le32 sta[6];
+	u32 sta4, sta5;
+	int ret;
+
+	ret = dwr_ctrl_vendor_in(dwr, DWR_USB_REQ_READ_MULTI_MAC, 0,
+				 DWR_STA_CSR0, sta, sizeof(sta));
+	if (ret)
+		return ret;
+
+	sta4 = le32_to_cpu(sta[4]);
+	sta5 = le32_to_cpu(sta[5]);
+
+	if (no_retry_ok)
+		*no_retry_ok = FIELD_GET(DWR_STA_CSR4_TX_NO_RETRY_OK_MASK, sta4);
+	if (one_retry_ok)
+		*one_retry_ok = FIELD_GET(DWR_STA_CSR4_TX_ONE_RETRY_OK_MASK, sta4);
+	if (multi_retry_ok)
+		*multi_retry_ok = FIELD_GET(DWR_STA_CSR5_TX_MULTI_RETRY_OK_MASK, sta5);
+	if (retry_fail)
+		*retry_fail = FIELD_GET(DWR_STA_CSR5_TX_RETRY_FAIL_MASK, sta5);
+
+	return 0;
+}
